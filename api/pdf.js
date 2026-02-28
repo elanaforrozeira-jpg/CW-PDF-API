@@ -9,8 +9,11 @@ module.exports = async (req, res) => {
   
   let browser = null;
   try {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: 'URL parameter required' });
+    let targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).json({ error: 'URL is required' });
+
+    // URL agar encoded hai toh use theek karne ke liye
+    targetUrl = decodeURIComponent(targetUrl);
 
     browser = await puppeteer.launch({
       args: [...chromium.args, '--hide-scrollbars', '--disable-web-security'],
@@ -21,16 +24,14 @@ module.exports = async (req, res) => {
     });
 
     const page = await browser.newPage();
-    
-    // CW Media ke liye realistic headers
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36');
 
+    // Navigation timeout increase kiya hai
     await page.goto(targetUrl, { 
       waitUntil: 'networkidle0', 
       timeout: 60000 
     });
 
-    // Seedhe PDF render karne ke liye
     const buffer = await page.pdf({
       format: 'A4',
       printBackground: true
@@ -39,8 +40,7 @@ module.exports = async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.send(buffer);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to generate PDF', message: error.message });
+    res.status(500).json({ error: 'Launch Error', message: error.message });
   } finally {
     if (browser) await browser.close();
   }
