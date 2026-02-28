@@ -1,6 +1,7 @@
 {
   "name": "pdf-proxy-api",
   "version": "1.0.0",
+  "main": "api/pdf.js",
   "dependencies": {
     "node-fetch": "^2.6.7"
   }
