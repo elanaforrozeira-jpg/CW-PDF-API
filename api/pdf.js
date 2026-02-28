@@ -20,40 +20,41 @@ module.exports = async (req, res) => {
         url: decodeURIComponent(targetUrl),
         options: {
           format: 'A4',
-          printBackground: true
-        },
-        // CW Media security bypass headers
-        setExtraHTTPHeaders: {
-          "Accept": "application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-          "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-          "Cache-Control": "no-cache",
-          "Pragma": "no-cache",
-          "Referer": "https://cwmediabkt99.crwilladmin.com/",
-          "Sec-Fetch-Dest": "document",
-          "Sec-Fetch-Mode": "navigate",
-          "Sec-Fetch-Site": "cross-site",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+          printBackground: true,
+          displayHeaderFooter: false
         },
         gotoOptions: { 
-          waitUntil: 'networkidle0',
+          // 'load' use kar rahe hain taaki agar network idle na ho tab bhi PDF ban jaye
+          waitUntil: 'load', 
           timeout: 45000 
+        },
+        // Real Browser behavior mimic karne ke liye
+        setExtraHTTPHeaders: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "application/pdf,application/xhtml+xml,text/html;q=0.9",
+          "Referer": "https://cwmediabkt99.crwilladmin.com/",
+          "Accept-Language": "en-US,en;q=0.9"
         }
       })
     });
 
     if (!response.ok) {
-       const errBody = await response.text();
-       throw new Error(`Status: ${response.status} - ${errBody}`);
+       const status = response.status;
+       throw new Error(`Site blocked request with status: ${status}`);
     }
 
     const pdfBuffer = await response.buffer();
+    
+    // Response send karna
     res.setHeader('Content-Type', 'application/pdf');
-    res.status(200).send(pdfBuffer);
+    res.setHeader('Content-Disposition', 'inline; filename="class-notes.pdf"');
+    res.send(pdfBuffer);
 
   } catch (error) {
     res.status(500).json({ 
       error: 'Bypass Failed', 
-      message: "Target site is blocking the request. It might need a login cookie." 
+      message: error.message,
+      tip: "Check if the PDF link is still active." 
     });
   }
 };
