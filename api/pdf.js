@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
 
 module.exports = async (req, res) => {
-  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   
@@ -9,15 +8,10 @@ module.exports = async (req, res) => {
   
   try {
     const targetUrl = req.query.url;
-    if (!targetUrl) {
-      return res.status(400).json({ error: 'URL is required. Usage: /pdf?url=URL' });
-    }
+    if (!targetUrl) return res.status(400).json({ error: 'URL required' });
 
-    // Aapki Browserless API Key yahan use ho rahi hai
     const BROWSERLESS_KEY = "2U40pteEEfgboGxc0c0a37611fd811886f47819d326726eaa";
     const endpoint = `https://production-sfo.browserless.io/pdf?token=${BROWSERLESS_KEY}`;
-
-    console.log(`Sending request to Browserless for: ${targetUrl}`);
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -26,34 +20,28 @@ module.exports = async (req, res) => {
         url: decodeURIComponent(targetUrl),
         options: {
           format: 'A4',
-          printBackground: true,
-          margin: { top: '0.4in', right: '0.4in', bottom: '0.4in', left: '0.4in' }
+          printBackground: true
         },
         gotoOptions: { 
-          waitUntil: 'networkidle0',
+          waitUntil: 'networkidle2',
           timeout: 30000 
+        },
+        // YE FIX HAI: Custom headers add kiye hain authorized dikhne ke liye
+        setExtraHTTPHeaders: {
+          "Referer": "https://cwmediabkt99.crwilladmin.com/",
+          "Origin": "https://cwmediabkt99.crwilladmin.com/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
       })
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Browserless Error: ${response.status} - ${errorText}`);
-    }
+    if (!response.ok) throw new Error(`Browserless Error: ${response.status}`);
 
     const pdfBuffer = await response.buffer();
-    
-    // PDF Send karna
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Length', pdfBuffer.length);
-    res.status(200).send(pdfBuffer);
+    res.send(pdfBuffer);
 
   } catch (error) {
-    console.error('API Error:', error.message);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Cloud Generation Failed', 
-      message: error.message 
-    });
+    res.status(500).json({ error: 'Auth failed on target site', message: error.message });
   }
 };
