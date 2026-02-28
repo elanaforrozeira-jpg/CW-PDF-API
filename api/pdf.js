@@ -22,26 +22,38 @@ module.exports = async (req, res) => {
           format: 'A4',
           printBackground: true
         },
-        gotoOptions: { 
-          waitUntil: 'networkidle2',
-          timeout: 30000 
-        },
-        // YE FIX HAI: Custom headers add kiye hain authorized dikhne ke liye
+        // CW Media security bypass headers
         setExtraHTTPHeaders: {
+          "Accept": "application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+          "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
           "Referer": "https://cwmediabkt99.crwilladmin.com/",
-          "Origin": "https://cwmediabkt99.crwilladmin.com/",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "cross-site",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        },
+        gotoOptions: { 
+          waitUntil: 'networkidle0',
+          timeout: 45000 
         }
       })
     });
 
-    if (!response.ok) throw new Error(`Browserless Error: ${response.status}`);
+    if (!response.ok) {
+       const errBody = await response.text();
+       throw new Error(`Status: ${response.status} - ${errBody}`);
+    }
 
     const pdfBuffer = await response.buffer();
     res.setHeader('Content-Type', 'application/pdf');
-    res.send(pdfBuffer);
+    res.status(200).send(pdfBuffer);
 
   } catch (error) {
-    res.status(500).json({ error: 'Auth failed on target site', message: error.message });
+    res.status(500).json({ 
+      error: 'Bypass Failed', 
+      message: "Target site is blocking the request. It might need a login cookie." 
+    });
   }
 };
