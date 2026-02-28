@@ -4,7 +4,6 @@ const puppeteer = require('puppeteer-core');
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     let browser = null;
@@ -12,17 +11,8 @@ module.exports = async (req, res) => {
         const { url } = req.query;
         if (!url) return res.status(400).json({ error: 'URL required' });
 
-        const targetUrl = decodeURIComponent(url);
-
         browser = await puppeteer.launch({
-            args: [
-                ...chromium.args,
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--single-process',
-                '--no-zygote'
-            ],
+            args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
             defaultViewport: chromium.defaultViewport,
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
@@ -30,26 +20,14 @@ module.exports = async (req, res) => {
         });
 
         const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36');
+        await page.goto(decodeURIComponent(url), { waitUntil: 'networkidle0', timeout: 60000 });
 
-        await page.goto(targetUrl, { 
-            waitUntil: 'networkidle0', 
-            timeout: 60000 
-        });
-
-        const buffer = await page.pdf({
-            format: 'A4',
-            printBackground: true
-        });
+        const buffer = await page.pdf({ format: 'A4', printBackground: true });
 
         res.setHeader('Content-Type', 'application/pdf');
         res.send(buffer);
     } catch (error) {
-        res.status(500).json({ 
-            error: 'Generation Failed', 
-            message: error.message,
-            tip: "Please use 'Redeploy with clean build cache' in Vercel settings."
-        });
+        res.status(500).json({ error: 'Error', message: error.message });
     } finally {
         if (browser) await browser.close();
     }
