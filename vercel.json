@@ -1,12 +1,15 @@
 {
   "version": 2,
   "functions": {
-    "api/**/*.js": {
-      "memory": 2048,
+    "api/pdf.js": {
+      "memory": 1048,
       "maxDuration": 60
     }
   },
   "routes": [
-    { "src": "/pdf", "dest": "/api/pdf.js" }
+    {
+      "src": "/pdf",
+      "dest": "/api/pdf.js"
+    }
   ]
 }
