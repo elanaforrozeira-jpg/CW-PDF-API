@@ -2,7 +2,7 @@
   "name": "pro-pdf-generator",
   "version": "1.0.0",
   "dependencies": {
-    "puppeteer-core": "19.8.0",
-    "@sparticuz/chromium": "113.0.1"
+    "puppeteer-core": "19.7.2",
+    "@sparticuz/chromium": "112.0.0"
   }
 }
