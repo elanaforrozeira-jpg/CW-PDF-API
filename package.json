@@ -1,5 +1,5 @@
 {
-  "name": "pro-pdf-generator",
+  "name": "pdf-generator",
   "version": "1.0.0",
   "dependencies": {
     "puppeteer-core": "19.7.2",
