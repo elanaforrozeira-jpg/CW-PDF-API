@@ -8,53 +8,43 @@ module.exports = async (req, res) => {
   
   try {
     const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: 'URL is required' });
+    if (!targetUrl) return res.status(400).json({ error: 'URL required' });
 
-    const BROWSERLESS_KEY = "2U40pteEEfgboGxc0c0a37611fd811886f47819d326726eaa";
+    // Step 1: Link ko Google Drive Viewer ke andar wrap karna
+    // Google ke servers file ko fetch karenge, isse bypass ho jayega
+    const googleProxyUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(decodeURIComponent(targetUrl))}&embedded=true`;
     
-    // Stealth mode enable karne ke liye query param joda hai
+    const BROWSERLESS_KEY = "2U40pteEEfgboGxc0c0a37611fd811886f47819d326726eaa";
     const endpoint = `https://production-sfo.browserless.io/pdf?token=${BROWSERLESS_KEY}&stealth`;
 
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: decodeURIComponent(targetUrl),
+        url: googleProxyUrl,
         options: {
           format: 'A4',
-          printBackground: true
-        },
-        // CW Media security bypass headers
-        setExtraHTTPHeaders: {
-          "Referer": "https://cwmediabkt99.crwilladmin.com/",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive"
+          printBackground: true,
+          margin: { top: '0', right: '0', bottom: '0', left: '0' }
         },
         gotoOptions: { 
-          waitUntil: 'load', // S3 links ke liye 'load' faster aur stable hota hai
-          timeout: 45000 
+          waitUntil: 'networkidle2', // Google viewer load hone ka wait karega
+          timeout: 50000 
         }
       })
     });
 
-    if (!response.ok) {
-      throw new Error(`Site Blocked Access (Status: ${response.status})`);
-    }
+    if (!response.ok) throw new Error(`Google Proxy Blocked: ${response.status}`);
 
     const pdfBuffer = await response.buffer();
-    
-    // Headers for PDF display
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline; filename="class-notes.pdf"');
     res.send(pdfBuffer);
 
   } catch (error) {
     res.status(500).json({ 
-      error: 'Bypass Failed', 
+      error: 'Final Bypass Failed', 
       message: error.message,
-      note: "If this persists, the link might have expired or requires a session cookie."
+      tip: "Try refreshing the original PDF link in your browser first."
     });
   }
 };
