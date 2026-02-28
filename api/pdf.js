@@ -8,43 +8,35 @@ module.exports = async (req, res) => {
   
   try {
     const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: 'URL required' });
+    if (!targetUrl) return res.status(400).json({ error: 'URL missing' });
 
-    // Step 1: Link ko Google Drive Viewer ke andar wrap karna
-    // Google ke servers file ko fetch karenge, isse bypass ho jayega
-    const googleProxyUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(decodeURIComponent(targetUrl))}&embedded=true`;
-    
     const BROWSERLESS_KEY = "2U40pteEEfgboGxc0c0a37611fd811886f47819d326726eaa";
-    const endpoint = `https://production-sfo.browserless.io/pdf?token=${BROWSERLESS_KEY}&stealth`;
+    // Is baar hum /content endpoint use karenge jo raw file download ke liye hota hai
+    const endpoint = `https://production-sfo.browserless.io/download?token=${BROWSERLESS_KEY}`;
 
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: googleProxyUrl,
-        options: {
-          format: 'A4',
-          printBackground: true,
-          margin: { top: '0', right: '0', bottom: '0', left: '0' }
-        },
-        gotoOptions: { 
-          waitUntil: 'networkidle2', // Google viewer load hone ka wait karega
-          timeout: 50000 
+        url: decodeURIComponent(targetUrl),
+        // Force download behavior
+        headers: {
+          "Referer": "https://cwmediabkt99.crwilladmin.com/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
       })
     });
 
-    if (!response.ok) throw new Error(`Google Proxy Blocked: ${response.status}`);
+    if (!response.ok) throw new Error(`Fetch Failed: ${response.status}`);
 
-    const pdfBuffer = await response.buffer();
+    const buffer = await response.buffer();
+    
+    // Browser ko PDF force karne ke liye headers
     res.setHeader('Content-Type', 'application/pdf');
-    res.send(pdfBuffer);
+    res.setHeader('Content-Disposition', 'attachment; filename="notes.pdf"');
+    res.send(buffer);
 
   } catch (error) {
-    res.status(500).json({ 
-      error: 'Final Bypass Failed', 
-      message: error.message,
-      tip: "Try refreshing the original PDF link in your browser first."
-    });
+    res.status(500).json({ error: 'Bypass Failed', message: error.message });
   }
 };
