@@ -1,10 +1,8 @@
 {
   "name": "pro-pdf-generator",
-  "version": "2.1.0",
-  "private": true,
+  "version": "1.0.0",
   "dependencies": {
     "puppeteer-core": "19.8.0",
-    "@sparticuz/chromium": "113.0.1",
-    "chromium-brotli": "^1.0.0"
+    "@sparticuz/chromium": "113.0.1"
   }
 }
