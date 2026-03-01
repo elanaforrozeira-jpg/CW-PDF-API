@@ -2,6 +2,7 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const app = express();
 
+// Lazy-loading bypass ke liye auto-scroll
 async function autoScroll(page){
     await page.evaluate(async () => {
         await new Promise((resolve) => {
@@ -41,21 +42,21 @@ app.get('/pdf', async (req, res) => {
         const page = await browser.newPage();
         await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-        
         await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
 
-        // Page load hone ka wait
-        await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 90000 });
+        // Is baar 'domcontentloaded' use kar rahe hain taaki XML errors jaldi detect ho sakein
+        const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-        // Pura content load karne ke liye niche tak scroll
+        // Check for XML Errors like AccessDenied
+        const content = await page.content();
+        if (content.includes("AccessDenied")) {
+            return res.status(403).json({ status: "fail", error: "Link Expired (Access Denied)" });
+        }
+
         await autoScroll(page);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000)); // Rendering ke liye extra wait
 
-        const pdfBuffer = await page.pdf({ 
-            printBackground: true,
-            preferCSSPageSize: true 
-        });
-
+        const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
         res.setHeader('Content-Type', 'application/pdf');
         res.send(pdfBuffer);
 
