@@ -4,10 +4,11 @@ const app = express();
 
 app.get('/pdf', async (req, res) => {
     const rawUrl = req.query.url;
+    
     if (!rawUrl) {
         return res.status(400).json({ 
             status: "fail", 
-            message: "URL parameter missing" 
+            message: "URL parameter missing. Usage: /pdf?url=<encoded_url>" 
         });
     }
     
@@ -15,7 +16,9 @@ app.get('/pdf', async (req, res) => {
     let browser;
 
     try {
-        console.log('🚀 Fetching PDF from:', targetUrl);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🚀 Starting PDF fetch for:', targetUrl);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
         browser = await puppeteer.launch({
             executablePath: '/usr/bin/google-chrome-stable',
@@ -26,13 +29,15 @@ app.get('/pdf', async (req, res) => {
                 '--single-process',
                 '--no-zygote',
                 '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
                 '--proxy-server=Px031901.pointtoserver.com:10780'
             ]
         });
 
         const page = await browser.newPage();
         
-        // Proxy authentication
+        // Proxy auth
         await page.authenticate({ 
             username: 'purevpn0s11340994', 
             password: 'ak3t35fp' 
@@ -44,128 +49,179 @@ app.get('/pdf', async (req, res) => {
         
         await page.setExtraHTTPHeaders({ 
             "Referer": "https://cwmediabkt99.crwilladmin.com/",
-            "Accept": "application/pdf,*/*"
+            "Accept": "application/pdf,text/html,application/xhtml+xml,*/*"
         });
 
-        console.log('🌐 Loading page...');
+        console.log('🌐 Navigating to page...');
         
-        // Direct PDF URL hai to seedha download karo
         const response = await page.goto(targetUrl, { 
-            waitUntil: 'networkidle0', 
+            waitUntil: 'domcontentloaded', 
             timeout: 120000 
         });
 
-        const contentType = response.headers()['content-type'];
+        const status = response.status();
+        const contentType = response.headers()['content-type'] || '';
         
-        // Agar direct PDF file hai
-        if (contentType && contentType.includes('application/pdf')) {
-            console.log('✅ Direct PDF file detected');
-            const pdfBuffer = await response.buffer();
+        console.log('📊 Response Status:', status);
+        console.log('📄 Content-Type:', contentType);
+
+        // Check if direct PDF
+        if (status === 200 && contentType.includes('application/pdf')) {
+            console.log('✅ Direct PDF detected, downloading...');
+            const buffer = await response.buffer();
+            console.log('📦 Buffer size:', buffer.length, 'bytes');
+            
+            if (buffer.length < 100) {
+                throw new Error('PDF buffer too small, might be corrupted');
+            }
+            
+            // Verify PDF signature
+            const pdfSignature = buffer.slice(0, 5).toString();
+            if (!pdfSignature.includes('%PDF')) {
+                throw new Error('Invalid PDF signature: ' + pdfSignature);
+            }
             
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Length', pdfBuffer.length);
-            res.setHeader('Content-Disposition', 'inline; filename="lecture-notes.pdf"');
-            res.send(pdfBuffer);
+            res.setHeader('Content-Length', buffer.length);
+            res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            res.send(buffer);
+            
+            console.log('✅ PDF sent successfully!');
             return;
         }
 
-        // Agar PDF viewer page hai (jaise tumhara screenshot)
-        console.log('🔍 PDF viewer detected, extracting actual PDF URL...');
+        // If it's a viewer page, wait and extract PDF URL
+        console.log('🔍 PDF viewer page detected, extracting PDF URL...');
         
-        // Wait for PDF to load in viewer
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(8000); // Longer wait for PDF to load
 
-        // Extract the actual PDF URL from the viewer
-        const pdfUrl = await page.evaluate(() => {
-            // Method 1: Check for iframe with PDF
-            const iframe = document.querySelector('iframe[src*=".pdf"], iframe[src*="blob:"]');
-            if (iframe) return iframe.src;
+        const extractedData = await page.evaluate(() => {
+            const data = {
+                pdfUrl: null,
+                method: null
+            };
             
-            // Method 2: Check for embed tag
-            const embed = document.querySelector('embed[type="application/pdf"]');
-            if (embed && embed.src) return embed.src;
-            
-            // Method 3: Check object tag
-            const obj = document.querySelector('object[type="application/pdf"]');
-            if (obj && obj.data) return obj.data;
-            
-            // Method 4: Check for PDF.js viewer
-            if (window.PDFViewerApplication && window.PDFViewerApplication.url) {
-                return window.PDFViewerApplication.url;
+            // Method 1: iframe
+            const iframe = document.querySelector('iframe');
+            if (iframe && iframe.src) {
+                data.pdfUrl = iframe.src;
+                data.method = 'iframe';
+                return data;
             }
             
-            // Method 5: Check URL parameters
+            // Method 2: embed
+            const embed = document.querySelector('embed');
+            if (embed && embed.src) {
+                data.pdfUrl = embed.src;
+                data.method = 'embed';
+                return data;
+            }
+            
+            // Method 3: object
+            const obj = document.querySelector('object');
+            if (obj && obj.data) {
+                data.pdfUrl = obj.data;
+                data.method = 'object';
+                return data;
+            }
+            
+            // Method 4: Check URL params
             const params = new URLSearchParams(window.location.search);
-            if (params.has('url')) return decodeURIComponent(params.get('url'));
-            if (params.has('file')) return decodeURIComponent(params.get('file'));
-            
-            // Method 6: Look for any anchor tag with PDF
-            const links = Array.from(document.querySelectorAll('a[href*=".pdf"]'));
-            if (links.length > 0) return links[0].href;
-            
-            // Method 7: Check all iframes
-            const allIframes = document.querySelectorAll('iframe');
-            for (let iframe of allIframes) {
-                if (iframe.src) return iframe.src;
+            if (params.has('url')) {
+                data.pdfUrl = decodeURIComponent(params.get('url'));
+                data.method = 'url_param';
+                return data;
             }
             
-            return null;
+            // Method 5: All links
+            const links = Array.from(document.querySelectorAll('a'));
+            for (let link of links) {
+                if (link.href && link.href.includes('.pdf')) {
+                    data.pdfUrl = link.href;
+                    data.method = 'anchor_tag';
+                    return data;
+                }
+            }
+            
+            return data;
         });
 
-        if (!pdfUrl) {
-            throw new Error('Could not find PDF URL on the page');
+        console.log('🔍 Extraction method:', extractedData.method);
+        console.log('🔗 Extracted URL:', extractedData.pdfUrl);
+
+        if (!extractedData.pdfUrl) {
+            throw new Error('Could not find PDF URL in the page');
         }
 
-        console.log('📥 Found PDF URL:', pdfUrl);
-
-        // Create new page to download the actual PDF
-        const pdfPage = await browser.newPage();
+        // Fetch the actual PDF
+        console.log('📥 Fetching actual PDF file...');
         
+        const pdfPage = await browser.newPage();
         await pdfPage.authenticate({ 
             username: 'purevpn0s11340994', 
             password: 'ak3t35fp' 
         });
-        
         await pdfPage.setExtraHTTPHeaders({ 
-            "Referer": targetUrl,
-            "Accept": "application/pdf,*/*"
+            "Referer": targetUrl
         });
 
-        const pdfResponse = await pdfPage.goto(pdfUrl, { 
-            waitUntil: 'networkidle0',
+        const pdfResponse = await pdfPage.goto(extractedData.pdfUrl, { 
+            waitUntil: 'domcontentloaded',
             timeout: 120000 
         });
 
-        if (pdfResponse.status() !== 200) {
-            throw new Error(`Failed to fetch PDF: HTTP ${pdfResponse.status()}`);
+        const pdfStatus = pdfResponse.status();
+        console.log('📊 PDF Response Status:', pdfStatus);
+
+        if (pdfStatus !== 200) {
+            throw new Error(`PDF fetch failed with status ${pdfStatus}`);
         }
 
         const pdfBuffer = await pdfResponse.buffer();
+        console.log('📦 PDF Buffer size:', pdfBuffer.length, 'bytes');
 
-        if (!pdfBuffer || pdfBuffer.length < 1000) {
-            throw new Error('Invalid PDF data received');
+        if (pdfBuffer.length < 100) {
+            throw new Error('PDF too small, might be corrupted');
         }
 
-        console.log('✅ PDF downloaded successfully, size:', pdfBuffer.length, 'bytes');
+        // Verify PDF
+        const signature = pdfBuffer.slice(0, 5).toString();
+        console.log('🔍 PDF Signature:', signature);
+        
+        if (!signature.includes('%PDF')) {
+            throw new Error('Invalid PDF format');
+        }
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Length', pdfBuffer.length);
-        res.setHeader('Content-Disposition', 'inline; filename="lecture-notes.pdf"');
+        res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
         res.send(pdfBuffer);
+
+        console.log('✅ PDF sent successfully!');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
         await pdfPage.close();
 
     } catch (error) {
-        console.error('❌ Error:', error.message);
+        console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.error('❌ ERROR:', error.message);
+        console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        
         res.status(500).json({ 
             status: "fail", 
             error: error.message,
-            url: targetUrl
+            url: targetUrl,
+            timestamp: new Date().toISOString()
         });
     } finally {
         if (browser) {
             await browser.close();
-            console.log('🔒 Browser closed');
         }
     }
 });
@@ -174,6 +230,7 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         service: 'PDF Downloader API',
+        version: '1.0.0',
         timestamp: new Date().toISOString()
     });
 });
@@ -181,12 +238,17 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         service: 'PDF Downloader API',
-        usage: 'GET /pdf?url=<encoded_pdf_url>',
-        example: '/pdf?url=https%3A%2F%2Fexample.com%2Ffile.pdf'
+        endpoints: {
+            download: '/pdf?url=<encoded_url>',
+            health: '/health'
+        },
+        example: '/pdf?url=' + encodeURIComponent('https://example.com/file.pdf')
     });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ PDF Downloader API running on port ${PORT}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`✅ PDF Downloader API is LIVE on port ${PORT}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 });
