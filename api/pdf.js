@@ -22,62 +22,65 @@ app.get('/pdf', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // Desktop view set karna slides ke liye
-        await page.setViewport({ width: 1600, height: 900 });
+        // standard PDF resolution set karna
+        await page.setViewport({ width: 1280, height: 720 });
 
         await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
         await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
 
-        // Go to URL and wait for scripts to run
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+        // URL par jana aur network shaant hone ka wait karna
+        await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 90000 });
 
-        // YAHAN MAGIC HAI: Saari slides ko alag-alag pages par force karna
+        // CSS Inject karke "Screenshot" mode ko deactivate karna aur PDF pages force karna
         await page.addStyleTag({
             content: `
+                @page { size: A4 landscape; margin: 0; }
                 @media print {
-                    div[class*="slide"], .slide, img, canvas { 
+                    canvas, img, .slide, div[class*="slide"] { 
                         page-break-after: always !important; 
-                        display: block !important;
-                        position: relative !important;
                         break-after: page !important;
+                        display: block !important;
+                        width: 100% !important;
+                        height: auto !important;
                     }
-                    body, html { height: auto !important; }
+                    .no-print, #header, #footer, .sidebar { display: none !important; }
                 }
             `
         });
 
-        // Niche tak scroll taaki saare 28 pages load ho jayein
+        // Saare dynamic content (slides) load karne ke liye niche tak scroll
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
-                let distance = 400;
+                let distance = 500;
                 let timer = setInterval(() => {
                     let scrollHeight = document.body.scrollHeight;
                     window.scrollBy(0, distance);
                     totalHeight += distance;
                     if(totalHeight >= scrollHeight){
                         clearInterval(timer);
-                        window.scrollTo(0,0);
+                        window.scrollTo(0,0); // Top par wapas aana zaroori hai
                         resolve();
                     }
                 }, 100);
             });
         });
 
-        // Extra wait taaki images render ho jayein
-        await new Promise(r => setTimeout(r, 5000));
+        // Buffering ke liye wait taaki PDF corrupt na ho
+        await new Promise(r => setTimeout(r, 6000));
 
-        // PDF generate karna A4 landscape format mein
+        // Asli PDF generate karna, Screenshot nahi!
         const pdfBuffer = await page.pdf({ 
             format: 'A4',
             landscape: true,
             printBackground: true,
             preferCSSPageSize: false,
-            margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
+            displayHeaderFooter: false
         });
 
         res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="notes.pdf"');
         res.send(pdfBuffer);
 
     } catch (e) {
@@ -88,4 +91,4 @@ app.get('/pdf', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Multi-page Engine Live on ${PORT}`));
+app.listen(PORT, () => console.log(`PDF Engine Live on ${PORT}`));
