@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const app = express();
 
 app.get('/pdf', async (req, res) => {
@@ -9,35 +9,25 @@ app.get('/pdf', async (req, res) => {
     let browser;
     try {
         browser = await puppeteer.launch({
+            // Docker image mein Chrome yahan hota hai
             executablePath: '/usr/bin/google-chrome-stable',
             headless: "new",
-            // Memory bachane ke liye optimized flags
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Memory crash rokne ke liye
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
+                '--disable-dev-shm-usage', 
+                '--single-process', // Memory bachane ke liye sabse zaroori
                 '--no-zygote',
-                '--single-process', // Free tier ke liye best
-                '--disable-gpu',
                 '--proxy-server=Px031901.pointtoserver.com:10780'
             ]
         });
 
         const page = await browser.newPage();
-        
-        // Proxy Auth
-        await page.authenticate({
-            username: 'purevpn0s11340994',
-            password: 'ak3t35fp'
-        });
-
-        // Basic Stealth
+        await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
         await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
 
-        // Networkidle0 ke bajaye load use karein memory bachane ke liye
+        // load use karein networkidle2 ke bajaye memory kam lagti hai
         await page.goto(decodeURIComponent(targetUrl), { waitUntil: 'load', timeout: 60000 });
         
         const pdf = await page.pdf({ format: 'A4', printBackground: true });
@@ -52,4 +42,4 @@ app.get('/pdf', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Live on ${PORT}`));
+app.listen(PORT, () => console.log(`App live on ${PORT}`));
