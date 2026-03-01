@@ -19,46 +19,43 @@ app.get('/pdf', async (req, res) => {
                 '--single-process',
                 '--no-zygote',
                 '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled', // Automation hide karne ke liye
-                '--proxy-server=Px031901.pointtoserver.com:10780' // Aapki PureVPN Proxy
+                '--disable-blink-features=AutomationControlled',
+                '--proxy-server=Px031901.pointtoserver.com:10780'
             ]
         });
 
         const page = await browser.newPage();
+        await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
 
-        // Proxy Auth
-        await page.authenticate({
-            username: 'purevpn0s11340994',
-            password: 'ak3t35fp'
+        // Session validation bypass headers
+        await page.setExtraHTTPHeaders({
+            "Referer": "https://cwmediabkt99.crwilladmin.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         });
 
-        // Human behavior simulate karna taaki block na ho
-        await page.setViewport({ width: 1280, height: 800 });
-        await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-
-        // Request interception taaki faltu ads load na hon aur memory bache
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if(['image', 'stylesheet', 'font'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
-            }
+        // 'networkidle0' zaroori hai taaki S3 access tokens load ho sakein
+        const response = await page.goto(targetUrl, { 
+            waitUntil: 'networkidle0', 
+            timeout: 90000 
         });
 
-        // Final attempt to load
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        // Check if we got Access Denied
+        const content = await page.content();
+        if (content.includes("AccessDenied")) {
+            throw new Error("S3 Storage blocked the request. The link might be expired.");
+        }
 
-        // PDF generate karne se pehle 2 sec ka wait (for extra safety)
-        await new Promise(r => setTimeout(r, 2000));
+        const pdfBuffer = await page.pdf({ 
+            format: 'A4', 
+            printBackground: true,
+            margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
+        });
 
-        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-        
         res.setHeader('Content-Type', 'application/pdf');
         res.send(pdfBuffer);
 
     } catch (e) {
-        console.error("Critical Error:", e.message);
         res.status(500).json({ status: "fail", error: e.message });
     } finally {
         if (browser) await browser.close();
@@ -66,4 +63,4 @@ app.get('/pdf', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Final Engine Live on ${PORT}`));
+app.listen(PORT, () => console.log(`Session Bypass Live on ${PORT}`));
