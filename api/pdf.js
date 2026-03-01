@@ -17,7 +17,7 @@ app.get('/pdf', async (req, res) => {
 
     try {
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('📥 Downloading original PDF file');
+        console.log('📥 Fetching PDF like a real browser');
         console.log('🔗 URL:', targetUrl);
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
@@ -31,6 +31,9 @@ app.get('/pdf', async (req, res) => {
                 '--no-zygote',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--allow-running-insecure-content',
                 '--proxy-server=Px031901.pointtoserver.com:10780'
             ],
             ignoreDefaultArgs: ['--enable-automation']
@@ -38,97 +41,186 @@ app.get('/pdf', async (req, res) => {
 
         const page = await browser.newPage();
         
+        // Enable CDP session for advanced control
+        const client = await page.target().createCDPSession();
+        await client.send('Network.enable');
+        
         // Proxy auth
         await page.authenticate({ 
             username: 'purevpn0s11340994', 
             password: 'ak3t35fp' 
         });
 
-        // Stealth
+        // Full stealth mode
         await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
+            // Remove webdriver
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
             });
-            window.chrome = { runtime: {} };
+
+            // Mock plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    {
+                        0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+                        description: "Portable Document Format",
+                        filename: "internal-pdf-viewer",
+                        length: 1,
+                        name: "Chrome PDF Plugin"
+                    }
+                ]
+            });
+
+            // Chrome object
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
+            };
+
+            // Permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // Languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
         });
 
         await page.setUserAgent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         );
 
-        // Perfect headers for direct PDF download
+        // Extra headers exactly like browser
         await page.setExtraHTTPHeaders({
-            'Accept': 'application/pdf,application/octet-stream,*/*',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://cwmediabkt99.crwilladmin.com/',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
+            'Accept-Encoding': 'identity',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
             'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
             'Upgrade-Insecure-Requests': '1'
         });
 
-        console.log('🌐 Fetching PDF file...');
+        let pdfBuffer = null;
+        let pdfCaptured = false;
 
-        // Direct goto to PDF URL
+        // Listen to network responses
+        client.on('Network.responseReceived', async (params) => {
+            const response = params.response;
+            const url = response.url;
+            const status = response.status;
+            const mimeType = response.mimeType || '';
+            
+            console.log('📡 Network:', url.substring(url.length - 50), '| Status:', status, '| Type:', mimeType);
+
+            if (status === 200 && mimeType.includes('pdf')) {
+                console.log('🎯 PDF response detected!');
+                
+                try {
+                    const responseBody = await client.send('Network.getResponseBody', {
+                        requestId: params.requestId
+                    });
+                    
+                    if (responseBody.base64Encoded) {
+                        pdfBuffer = Buffer.from(responseBody.body, 'base64');
+                    } else {
+                        pdfBuffer = Buffer.from(responseBody.body);
+                    }
+                    
+                    pdfCaptured = true;
+                    console.log('✅ PDF captured via CDP! Size:', pdfBuffer.length);
+                } catch (e) {
+                    console.log('⚠️  Could not get response body:', e.message);
+                }
+            }
+        });
+
+        console.log('🌐 Navigating to URL...');
+        
         const response = await page.goto(targetUrl, { 
             waitUntil: 'networkidle0',
             timeout: 120000
         });
 
         const status = response.status();
-        const contentType = response.headers()['content-type'] || '';
+        const headers = response.headers();
         
-        console.log('📊 Response Status:', status);
-        console.log('📄 Content-Type:', contentType);
+        console.log('📊 Page Response:');
+        console.log('   Status:', status);
+        console.log('   Content-Type:', headers['content-type']);
+        console.log('   Content-Length:', headers['content-length']);
 
-        if (status !== 200) {
-            throw new Error(`Failed to fetch PDF: HTTP ${status}`);
+        // Wait for PDF to load
+        console.log('⏳ Waiting for PDF to fully load...');
+        await page.waitForTimeout(10000);
+
+        // If CDP captured the PDF
+        if (pdfCaptured && pdfBuffer && pdfBuffer.length > 1000) {
+            const signature = pdfBuffer.slice(0, 8).toString();
+            console.log('🔍 PDF Signature:', signature);
+            
+            if (signature.includes('%PDF')) {
+                console.log('✅ Valid PDF! Sending...');
+                
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Length', pdfBuffer.length);
+                res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.send(pdfBuffer);
+                
+                console.log('✅ PDF sent successfully!');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+                return;
+            }
         }
 
-        // Get the buffer
-        const pdfBuffer = await response.buffer();
+        // Fallback: Try getting buffer from response
+        const fallbackBuffer = await response.buffer();
+        console.log('📦 Fallback buffer size:', fallbackBuffer.length);
         
-        console.log('📦 Buffer size:', pdfBuffer.length, 'bytes');
-
-        if (pdfBuffer.length < 1000) {
-            throw new Error('PDF file is too small, might be an error page');
+        if (fallbackBuffer.length > 1000) {
+            const sig = fallbackBuffer.slice(0, 8).toString();
+            console.log('🔍 Fallback signature:', sig);
+            
+            if (sig.includes('%PDF')) {
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Length', fallbackBuffer.length);
+                res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
+                res.send(fallbackBuffer);
+                
+                console.log('✅ PDF sent via fallback!');
+                return;
+            } else {
+                console.log('❌ Not a PDF. Content preview:', fallbackBuffer.slice(0, 200).toString());
+            }
         }
 
-        // Verify PDF signature
-        const signature = pdfBuffer.slice(0, 8).toString();
-        console.log('🔍 File signature:', signature);
+        // Final attempt: Check if page loaded PDF viewer
+        const pageContent = await page.evaluate(() => {
+            return {
+                contentType: document.contentType,
+                title: document.title,
+                hasEmbed: !!document.querySelector('embed[type="application/pdf"]'),
+                bodyText: document.body ? document.body.innerText.substring(0, 500) : 'No body'
+            };
+        });
 
-        if (!signature.includes('%PDF')) {
-            const preview = pdfBuffer.slice(0, 200).toString();
-            console.log('❌ Not a PDF! Content preview:', preview);
-            throw new Error('Downloaded file is not a valid PDF');
-        }
+        console.log('📄 Page content:', JSON.stringify(pageContent, null, 2));
 
-        // Extract PDF metadata
-        const pdfInfo = {
-            size: pdfBuffer.length,
-            sizeInMB: (pdfBuffer.length / (1024 * 1024)).toFixed(2)
-        };
-
-        console.log('✅ Valid PDF confirmed!');
-        console.log('📊 PDF Size:', pdfInfo.sizeInMB, 'MB');
-
-        // Send the original PDF
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Length', pdfBuffer.length);
-        res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.send(pdfBuffer);
-
-        console.log('✅ Original PDF sent successfully!');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        throw new Error('Could not capture PDF. The server might be blocking automated access.');
 
     } catch (error) {
         console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -144,7 +236,6 @@ app.get('/pdf', async (req, res) => {
     } finally {
         if (browser) {
             await browser.close();
-            console.log('🔒 Browser closed\n');
         }
     }
 });
@@ -152,24 +243,12 @@ app.get('/pdf', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok',
-        service: 'Direct PDF Downloader',
-        version: '5.0.0',
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/', (req, res) => {
-    res.json({
-        service: 'Direct PDF Downloader API',
-        description: 'Downloads original PDF files with authentication bypass',
-        usage: 'GET /pdf?url=<encoded_pdf_url>',
-        example: '/pdf?url=' + encodeURIComponent('https://example.com/file.pdf')
+        service: 'CDP PDF Downloader',
+        version: '6.0.0'
     });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`✅ Direct PDF Downloader running on ${PORT}`);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    console.log('✅ CDP PDF Downloader running on', PORT);
 });
