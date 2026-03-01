@@ -2,31 +2,9 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const app = express();
 
-// Lazy-loading bypass ke liye advanced auto-scroll
-async function autoScroll(page) {
-    await page.evaluate(async () => {
-        await new Promise((resolve) => {
-            let totalHeight = 0;
-            let distance = 200; // Thoda fast scroll taaki timeout na ho
-            let timer = setInterval(() => {
-                let scrollHeight = document.body.scrollHeight;
-                window.scrollBy(0, distance);
-                totalHeight += distance;
-                if (totalHeight >= scrollHeight) {
-                    clearInterval(timer);
-                    // Wapas upar jana zaroori hai printing ke liye
-                    window.scrollTo(0, 0);
-                    resolve();
-                }
-            }, 150);
-        });
-    });
-}
-
 app.get('/pdf', async (req, res) => {
     const rawUrl = req.query.url;
     if (!rawUrl) return res.status(400).json({ status: "fail", message: "URL missing" });
-    
     const targetUrl = decodeURIComponent(rawUrl).trim();
     let browser;
 
@@ -44,50 +22,65 @@ app.get('/pdf', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // Desktop view set karna taaki slides proper dikhen
-        await page.setViewport({ width: 1280, height: 800 });
+        // Desktop view set karna slides ke liye
+        await page.setViewport({ width: 1600, height: 900 });
 
         await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-        
-        await page.setExtraHTTPHeaders({ 
-            "Referer": "https://cwmediabkt99.crwilladmin.com/",
-            "Accept-Language": "en-US,en;q=0.9"
+        await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
+
+        // Go to URL and wait for scripts to run
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+
+        // YAHAN MAGIC HAI: Saari slides ko alag-alag pages par force karna
+        await page.addStyleTag({
+            content: `
+                @media print {
+                    div[class*="slide"], .slide, img, canvas { 
+                        page-break-after: always !important; 
+                        display: block !important;
+                        position: relative !important;
+                        break-after: page !important;
+                    }
+                    body, html { height: auto !important; }
+                }
+            `
         });
 
-        // Networkidle0 ka wait taaki saare heavy assets load hon
-        await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 90000 });
+        // Niche tak scroll taaki saare 28 pages load ho jayein
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                let distance = 400;
+                let timer = setInterval(() => {
+                    let scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if(totalHeight >= scrollHeight){
+                        clearInterval(timer);
+                        window.scrollTo(0,0);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
 
-        // Check for common errors before processing
-        const content = await page.content();
-        if (content.includes("AccessDenied")) { //
-            return res.status(403).json({ status: "fail", error: "Token Expired. Refresh link." });
-        }
-        if (content.includes("not authorized")) { //
-            return res.status(401).json({ status: "fail", error: "Proxy/Auth Blocked." });
-        }
+        // Extra wait taaki images render ho jayein
+        await new Promise(r => setTimeout(r, 5000));
 
-        // Saare pages load karne ke liye scroll
-        await autoScroll(page);
-        
-        // Final rendering ke liye 3 sec ka wait
-        await new Promise(r => setTimeout(r, 3000));
-
-        // PDF Generation with A4 paging logic
+        // PDF generate karna A4 landscape format mein
         const pdfBuffer = await page.pdf({ 
             format: 'A4',
+            landscape: true,
             printBackground: true,
-            margin: { top: '10px', right: '10px', bottom: '10px', left: '10px' },
-            displayHeaderFooter: false,
-            preferCSSPageSize: false, // Force browser to break pages
-            scale: 0.8 // Slides ko page par fit karne ke liye thoda scale down
+            preferCSSPageSize: false,
+            margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
         });
 
         res.setHeader('Content-Type', 'application/pdf');
         res.send(pdfBuffer);
 
     } catch (e) {
-        console.error("Render Error:", e.message);
         res.status(500).json({ status: "fail", error: e.message });
     } finally {
         if (browser) await browser.close();
@@ -95,4 +88,4 @@ app.get('/pdf', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Multi-page Engine Live on ${PORT}`));
