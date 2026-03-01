@@ -22,17 +22,16 @@ app.get('/pdf', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // Browser ke actual size ko set karna - yeh PDF dimensions ko decide karega
+        // Browser jaisa viewport
         await page.setViewport({ width: 1920, height: 1080 });
 
         await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
         await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
 
-        // URL par jana aur network shaant hone ka wait karna
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 90000 });
 
-        // Saare dynamic content (slides) load karne ke liye niche tak scroll
+        // Saare slides load karne ke liye scroll
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
@@ -43,32 +42,27 @@ app.get('/pdf', async (req, res) => {
                     totalHeight += distance;
                     if(totalHeight >= scrollHeight){
                         clearInterval(timer);
-                        window.scrollTo(0,0); // Top par wapas aana zaroori hai
+                        window.scrollTo(0, 0);
                         resolve();
                     }
                 }, 100);
             });
         });
 
-        // Buffering ke liye wait taaki PDF corrupt na ho
         await new Promise(r => setTimeout(r, 3000));
 
-        // Page ke actual dimensions ko detect karna
-        const dimensions = await page.evaluate(() => {
-            return {
-                width: document.documentElement.scrollWidth,
-                height: document.documentElement.scrollHeight,
-            };
-        });
-
-        // PDF generate karna with actual page dimensions - browser jaisa!
+        // PDF generate - browser default behavior use karenge
         const pdfBuffer = await page.pdf({ 
-            width: `${dimensions.width}px`,
-            height: `${dimensions.height}px`,
             printBackground: true,
-            preferCSSPageSize: false,
+            preferCSSPageSize: true, // Website ki CSS page size use karegi
             displayHeaderFooter: false,
-            pageRanges: '1-999999' // Saare pages include karna
+            scale: 1.0,
+            margin: {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0
+            }
         });
 
         res.setHeader('Content-Type', 'application/pdf');
@@ -76,6 +70,7 @@ app.get('/pdf', async (req, res) => {
         res.send(pdfBuffer);
 
     } catch (e) {
+        console.error('Error:', e);
         res.status(500).json({ status: "fail", error: e.message });
     } finally {
         if (browser) await browser.close();
