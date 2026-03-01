@@ -39,123 +39,134 @@ app.get('/pdf', async (req, res) => {
             "Referer": "https://cwmediabkt99.crwilladmin.com/" 
         });
 
-        // Track all PDF requests
         let pdfUrl = null;
         let pdfBuffer = null;
 
-        // Intercept network requests to find the PDF
-        await page.setRequestInterception(true);
-        
-        page.on('request', (request) => {
-            const url = request.url();
-            const resourceType = request.resourceType();
-            
-            // If it's already a direct PDF URL or document type
-            if (url.endsWith('.pdf') || resourceType === 'document') {
-                pdfUrl = url;
-            }
-            
-            request.continue();
-        });
-
-        // Capture PDF response
+        // Listen for responses to capture PDF
         page.on('response', async (response) => {
-            const url = response.url();
-            const contentType = response.headers()['content-type'] || '';
-            
-            if (contentType.includes('application/pdf')) {
-                console.log('PDF found at:', url);
-                pdfUrl = url;
-                try {
+            try {
+                const url = response.url();
+                const contentType = response.headers()['content-type'] || '';
+                const status = response.status();
+                
+                if (status === 200 && contentType.includes('application/pdf')) {
+                    console.log('✅ PDF detected:', url);
+                    pdfUrl = url;
                     pdfBuffer = await response.buffer();
-                } catch (e) {
-                    console.log('Could not capture buffer from response');
                 }
+            } catch (e) {
+                // Ignore errors in response handler
             }
         });
 
-        // Navigate to the page
+        console.log('🌐 Navigating to:', targetUrl);
         await page.goto(targetUrl, { 
-            waitUntil: 'networkidle0', 
+            waitUntil: 'networkidle2', 
             timeout: 90000 
         });
 
-        // Wait a bit for PDF to fully load
-        await new Promise(r => setTimeout(r, 3000));
+        // Wait for PDF to load
+        await new Promise(r => setTimeout(r, 5000));
 
-        // If we captured the buffer directly from network, use it
-        if (pdfBuffer) {
-            console.log('Using captured PDF buffer');
+        // If we got the buffer from network interception, use it
+        if (pdfBuffer && pdfBuffer.length > 0) {
+            console.log('✅ Sending captured PDF buffer, size:', pdfBuffer.length);
             res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Length', pdfBuffer.length);
             res.setHeader('Content-Disposition', 'inline; filename="notes.pdf"');
             res.send(pdfBuffer);
             return;
         }
 
-        // Try to extract PDF URL from page
+        // If network capture failed, try to extract URL and fetch
         if (!pdfUrl) {
+            console.log('🔍 Trying to extract PDF URL from page...');
             pdfUrl = await page.evaluate(() => {
-                // Check for iframe with PDF
-                const iframe = document.querySelector('iframe[src*=".pdf"], embed[src*=".pdf"], object[data*=".pdf"]');
-                if (iframe) {
-                    return iframe.src || iframe.getAttribute('data');
-                }
+                // Method 1: Check iframe
+                const iframe = document.querySelector('iframe');
+                if (iframe && iframe.src) return iframe.src;
                 
-                // Check for PDF.js viewer
-                const viewerUrl = window.location.href;
-                const urlParams = new URLSearchParams(window.location.search);
-                if (urlParams.has('file')) {
-                    return urlParams.get('file');
-                }
+                // Method 2: Check embed
+                const embed = document.querySelector('embed[type="application/pdf"]');
+                if (embed && embed.src) return embed.src;
                 
-                // Check meta tags or global variables
-                if (window.PDFViewerApplication && window.PDFViewerApplication.url) {
-                    return window.PDFViewerApplication.url;
-                }
+                // Method 3: Check object
+                const obj = document.querySelector('object[type="application/pdf"]');
+                if (obj && obj.data) return obj.data;
+                
+                // Method 4: Check for PDF.js viewer URL parameter
+                const params = new URLSearchParams(window.location.search);
+                if (params.has('url')) return decodeURIComponent(params.get('url'));
+                if (params.has('file')) return decodeURIComponent(params.get('file'));
                 
                 return null;
             });
         }
 
         if (pdfUrl) {
-            console.log('Fetching PDF from:', pdfUrl);
+            console.log('📥 Fetching PDF from URL:', pdfUrl);
             
-            // Create a new page to download the PDF
+            // Make absolute URL if relative
+            if (!pdfUrl.startsWith('http')) {
+                const base = new URL(targetUrl);
+                pdfUrl = new URL(pdfUrl, base.origin).href;
+            }
+            
+            // Fetch PDF with proper headers
             const pdfPage = await browser.newPage();
             await pdfPage.authenticate({ 
                 username: 'purevpn0s11340994', 
                 password: 'ak3t35fp' 
             });
+            await pdfPage.setUserAgent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            );
             await pdfPage.setExtraHTTPHeaders({ 
-                "Referer": "https://cwmediabkt99.crwilladmin.com/" 
+                "Referer": targetUrl 
             });
             
-            const pdfResponse = await pdfPage.goto(pdfUrl, { 
-                waitUntil: 'networkidle0',
+            const response = await pdfPage.goto(pdfUrl, { 
+                waitUntil: 'networkidle2',
                 timeout: 60000 
             });
             
-            const buffer = await pdfResponse.buffer();
+            if (response.status() !== 200) {
+                throw new Error(`PDF fetch failed with status ${response.status()}`);
+            }
+            
+            const buffer = await response.buffer();
+            
+            if (!buffer || buffer.length === 0) {
+                throw new Error('PDF buffer is empty');
+            }
+            
+            console.log('✅ PDF fetched successfully, size:', buffer.length);
             
             res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Length', buffer.length);
             res.setHeader('Content-Disposition', 'inline; filename="notes.pdf"');
             res.send(buffer);
             
             await pdfPage.close();
         } else {
-            throw new Error('Could not locate PDF file');
+            throw new Error('Could not locate PDF URL');
         }
 
     } catch (e) {
-        console.error('Error:', e.message);
+        console.error('❌ Error:', e.message);
         res.status(500).json({ 
             status: "fail", 
             error: e.message,
-            details: "Could not fetch the original PDF file"
+            url: targetUrl
         });
     } finally {
         if (browser) await browser.close();
     }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', service: 'PDF Proxy API' });
 });
 
 const PORT = process.env.PORT || 3000;
