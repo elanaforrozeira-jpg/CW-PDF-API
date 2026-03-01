@@ -1,7 +1,15 @@
 {
-  "name": "pdf-proxy-api",
-  "version": "1.5.0",
+  "name": "render-pdf-api",
+  "version": "1.0.0",
+  "description": "PDF Bypass API for Render",
+  "main": "api/pdf.js",
+  "scripts": {
+    "start": "node api/pdf.js"
+  },
   "dependencies": {
-    "node-fetch": "^2.6.7"
+    "express": "^4.18.2",
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
