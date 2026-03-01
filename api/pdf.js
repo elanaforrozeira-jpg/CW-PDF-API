@@ -1,9 +1,6 @@
 const express = require('express');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = require('puppeteer');
 const app = express();
-
-puppeteer.use(StealthPlugin());
 
 app.get('/pdf', async (req, res) => {
     const targetUrl = req.query.url;
@@ -12,48 +9,47 @@ app.get('/pdf', async (req, res) => {
     let browser;
     try {
         browser = await puppeteer.launch({
-            executablePath: '/usr/bin/google-chrome-stable', // Docker environment ke liye
+            executablePath: '/usr/bin/google-chrome-stable',
             headless: "new",
+            // Memory bachane ke liye optimized flags
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // Memory crash rokne ke liye
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process', // Free tier ke liye best
+                '--disable-gpu',
                 '--proxy-server=Px031901.pointtoserver.com:10780'
             ]
         });
 
         const page = await browser.newPage();
         
-        // Proxy Authentication
+        // Proxy Auth
         await page.authenticate({
             username: 'purevpn0s11340994',
             password: 'ak3t35fp'
         });
 
-        // Stealth Headers taaki site block na kare
-        await page.setExtraHTTPHeaders({
-            "Referer": "https://cwmediabkt99.crwilladmin.com/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        });
+        // Basic Stealth
+        await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+        await page.setExtraHTTPHeaders({ "Referer": "https://cwmediabkt99.crwilladmin.com/" });
 
-        // URL par jana
-        await page.goto(decodeURIComponent(targetUrl), { 
-            waitUntil: 'networkidle2', 
-            timeout: 60000 
-        });
+        // Networkidle0 ke bajaye load use karein memory bachane ke liye
+        await page.goto(decodeURIComponent(targetUrl), { waitUntil: 'load', timeout: 60000 });
         
         const pdf = await page.pdf({ format: 'A4', printBackground: true });
-        
         res.contentType("application/pdf");
         res.send(pdf);
 
     } catch (e) {
-        console.error(e);
         res.status(500).send("Error: " + e.message);
     } finally {
         if (browser) await browser.close();
     }
 });
 
-// Render dynamic port use karta hai
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Live on ${PORT}`));
