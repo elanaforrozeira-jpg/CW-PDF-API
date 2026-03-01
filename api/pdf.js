@@ -17,8 +17,8 @@ app.get('/pdf', async (req, res) => {
 
     try {
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('🚀 Starting authenticated PDF extraction');
-        console.log('🔗 Target URL:', targetUrl);
+        console.log('🕵️  Starting STEALTH mode PDF extraction');
+        console.log('🔗 Target:', targetUrl);
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
         browser = await puppeteer.launch({
@@ -30,45 +30,177 @@ app.get('/pdf', async (req, res) => {
                 '--single-process',
                 '--no-zygote',
                 '--disable-dev-shm-usage',
+                
+                // Anti-detection flags
                 '--disable-blink-features=AutomationControlled',
-                '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-web-security',
+                '--disable-site-isolation-trials',
+                
+                // Real browser simulation
+                '--window-size=1920,1080',
+                '--disable-infobars',
+                '--disable-notifications',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-popup-blocking',
+                
+                // Proxy
                 '--proxy-server=Px031901.pointtoserver.com:10780'
-            ]
+            ],
+            ignoreDefaultArgs: ['--enable-automation']
         });
 
         const page = await browser.newPage();
         
-        // Viewport set karo
-        await page.setViewport({ 
-            width: 1920, 
-            height: 1080 
-        });
-
         // Proxy authentication
         await page.authenticate({ 
             username: 'purevpn0s11340994', 
             password: 'ak3t35fp' 
         });
 
-        // Stealth user agent
+        // Perfect viewport - common desktop size
+        await page.setViewport({ 
+            width: 1920, 
+            height: 1080,
+            deviceScaleFactor: 1,
+            hasTouch: false,
+            isLandscape: true,
+            isMobile: false
+        });
+
+        // === STEALTH INJECTION ===
+        console.log('🛡️  Injecting stealth scripts...');
+        
+        await page.evaluateOnNewDocument(() => {
+            // 1. Remove webdriver property
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false
+            });
+
+            // 2. Mock plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    {
+                        0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+                        description: "Portable Document Format",
+                        filename: "internal-pdf-viewer",
+                        length: 1,
+                        name: "Chrome PDF Plugin"
+                    },
+                    {
+                        0: {type: "application/pdf", suffixes: "pdf", description: "Portable Document Format"},
+                        description: "Portable Document Format",
+                        filename: "internal-pdf-viewer",
+                        length: 1,
+                        name: "Chrome PDF Viewer"
+                    },
+                    {
+                        description: "Portable Document Format",
+                        filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+                        length: 1,
+                        name: "PDF Viewer"
+                    }
+                ]
+            });
+
+            // 3. Mock languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+
+            // 4. Mock permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // 5. Chrome runtime
+            window.chrome = {
+                runtime: {}
+            };
+
+            // 6. Mock battery
+            Object.defineProperty(navigator, 'getBattery', {
+                get: () => () => Promise.resolve({
+                    charging: true,
+                    chargingTime: 0,
+                    dischargingTime: Infinity,
+                    level: 1
+                })
+            });
+
+            // 7. Connection
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 100,
+                    downlink: 10,
+                    saveData: false
+                })
+            });
+
+            // 8. Hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8
+            });
+
+            // 9. Device memory
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+
+            // 10. Mock screen
+            Object.defineProperty(window.screen, 'width', { get: () => 1920 });
+            Object.defineProperty(window.screen, 'height', { get: () => 1080 });
+            Object.defineProperty(window.screen, 'availWidth', { get: () => 1920 });
+            Object.defineProperty(window.screen, 'availHeight', { get: () => 1040 });
+            Object.defineProperty(window.screen, 'colorDepth', { get: () => 24 });
+            Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24 });
+
+            // 11. User activation
+            Object.defineProperty(navigator, 'userActivation', {
+                get: () => ({
+                    hasBeenActive: true,
+                    isActive: true
+                })
+            });
+
+            // 12. Notification permission
+            Object.defineProperty(Notification, 'permission', {
+                get: () => 'default'
+            });
+        });
+
+        // Real browser user agent
         await page.setUserAgent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         );
-        
-        await page.setExtraHTTPHeaders({ 
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://cwmediabkt99.crwilladmin.com/",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin"
+
+        // Perfect headers - exactly like real browser
+        await page.setExtraHTTPHeaders({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
+            'Referer': 'https://cwmediabkt99.crwilladmin.com/'
         });
 
-        // Network monitoring for PDF capture
+        console.log('✅ Stealth mode activated');
+
+        // PDF capture from network
         let pdfBuffer = null;
-        let capturedFromNetwork = false;
+        let pdfCaptured = false;
 
         page.on('response', async (response) => {
             try {
@@ -76,58 +208,51 @@ app.get('/pdf', async (req, res) => {
                 const contentType = response.headers()['content-type'] || '';
                 const status = response.status();
                 
-                // Log all responses for debugging
-                if (url.includes('compressed.pdf') || url.includes('class-attachment')) {
-                    console.log('📊 Response for:', url);
-                    console.log('   Status:', status);
-                    console.log('   Content-Type:', contentType);
-                }
+                console.log('📡 Response:', url.substring(0, 80), '| Status:', status, '| Type:', contentType);
                 
-                // Capture PDF responses
                 if (status === 200 && contentType.includes('application/pdf')) {
-                    console.log('✅ PDF found in network traffic!');
+                    console.log('🎯 PDF DETECTED!');
                     const buffer = await response.buffer();
+                    const signature = buffer.slice(0, 5).toString();
                     
-                    // Verify it's a real PDF
-                    const sig = buffer.slice(0, 5).toString();
-                    if (sig.includes('%PDF')) {
+                    console.log('🔍 Signature:', signature);
+                    console.log('📦 Size:', buffer.length, 'bytes');
+                    
+                    if (signature.includes('%PDF') && buffer.length > 1000) {
                         pdfBuffer = buffer;
-                        capturedFromNetwork = true;
-                        console.log('📦 Valid PDF captured, size:', buffer.length, 'bytes');
+                        pdfCaptured = true;
+                        console.log('✅ Valid PDF captured!');
                     }
                 }
             } catch (e) {
-                // Ignore response handling errors
+                // Silent fail for response handling
             }
         });
 
-        console.log('🌐 Loading page with full browser context...');
+        console.log('🌐 Navigating to URL as real browser...');
         
-        // Navigate to the URL - this will trigger any authentication/session
         const response = await page.goto(targetUrl, { 
             waitUntil: 'networkidle2', 
             timeout: 120000 
         });
 
-        const initialStatus = response.status();
-        const initialContentType = response.headers()['content-type'] || '';
-        
-        console.log('📊 Initial Response:');
-        console.log('   Status:', initialStatus);
-        console.log('   Content-Type:', initialContentType);
+        console.log('📊 Page loaded, Status:', response.status());
+        console.log('📄 Content-Type:', response.headers()['content-type']);
 
         // Wait for PDF to load
         console.log('⏳ Waiting for PDF to fully load...');
-        await page.waitForTimeout(12000); // 12 seconds
+        await page.waitForTimeout(15000); // 15 seconds
 
-        // Check if we captured PDF from network
-        if (capturedFromNetwork && pdfBuffer && pdfBuffer.length > 1000) {
-            console.log('✅ Using PDF captured from network traffic');
+        // Check if PDF was captured
+        if (pdfCaptured && pdfBuffer && pdfBuffer.length > 1000) {
+            console.log('🎉 SUCCESS! Sending PDF...');
+            console.log('📦 Final size:', pdfBuffer.length, 'bytes');
             
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Length', pdfBuffer.length);
             res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
             res.send(pdfBuffer);
             
             console.log('✅ PDF sent successfully!');
@@ -135,101 +260,23 @@ app.get('/pdf', async (req, res) => {
             return;
         }
 
-        // If no PDF captured, check page content type
-        const finalUrl = page.url();
-        console.log('🔍 Final URL after redirects:', finalUrl);
+        // If network capture failed, try alternative methods
+        console.log('⚠️  Network capture failed, trying alternatives...');
 
-        // Check if browser directly opened PDF
-        const isPdfPage = await page.evaluate(() => {
-            return document.contentType === 'application/pdf' || 
-                   document.querySelector('embed[type="application/pdf"]') !== null ||
-                   document.querySelector('iframe') !== null;
+        const pageInfo = await page.evaluate(() => {
+            return {
+                contentType: document.contentType,
+                title: document.title,
+                bodyHTML: document.body ? document.body.innerHTML.substring(0, 500) : 'No body',
+                hasIframe: !!document.querySelector('iframe'),
+                hasEmbed: !!document.querySelector('embed'),
+                hasObject: !!document.querySelector('object')
+            };
         });
 
-        console.log('📄 Is PDF viewer page?', isPdfPage);
+        console.log('📄 Page info:', JSON.stringify(pageInfo, null, 2));
 
-        if (isPdfPage) {
-            console.log('📥 Page is showing PDF, trying to extract...');
-            
-            // Try to get PDF content from the page
-            const pdfDataUrl = await page.evaluate(() => {
-                const embed = document.querySelector('embed');
-                if (embed && embed.src) return embed.src;
-                
-                const iframe = document.querySelector('iframe');
-                if (iframe && iframe.src) return iframe.src;
-                
-                return window.location.href;
-            });
-
-            console.log('🔗 PDF data URL:', pdfDataUrl);
-
-            // If it's a blob or data URL, we need to fetch it differently
-            if (pdfDataUrl.startsWith('blob:')) {
-                console.log('🔄 Detected blob URL, converting to buffer...');
-                
-                pdfBuffer = await page.evaluate(async (url) => {
-                    const response = await fetch(url);
-                    const blob = await response.blob();
-                    const arrayBuffer = await blob.arrayBuffer();
-                    return Array.from(new Uint8Array(arrayBuffer));
-                }, pdfDataUrl);
-                
-                pdfBuffer = Buffer.from(pdfBuffer);
-                
-            } else if (pdfDataUrl !== finalUrl) {
-                // It's a different URL, fetch it
-                console.log('📥 Fetching from different URL...');
-                
-                const pdfPage = await browser.newPage();
-                await pdfPage.authenticate({ 
-                    username: 'purevpn0s11340994', 
-                    password: 'ak3t35fp' 
-                });
-                
-                // Copy cookies from main page
-                const cookies = await page.cookies();
-                await pdfPage.setCookie(...cookies);
-                
-                await pdfPage.setExtraHTTPHeaders({ 
-                    "Referer": finalUrl
-                });
-
-                const pdfResp = await pdfPage.goto(pdfDataUrl, { 
-                    waitUntil: 'networkidle0',
-                    timeout: 60000 
-                });
-
-                pdfBuffer = await pdfResp.buffer();
-                await pdfPage.close();
-            }
-        }
-
-        // Validate and send PDF
-        if (pdfBuffer && pdfBuffer.length > 100) {
-            const signature = pdfBuffer.slice(0, 5).toString();
-            console.log('🔍 PDF Signature check:', signature);
-            
-            if (signature.includes('%PDF')) {
-                res.setHeader('Content-Type', 'application/pdf');
-                res.setHeader('Content-Length', pdfBuffer.length);
-                res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
-                res.setHeader('Cache-Control', 'no-cache');
-                res.send(pdfBuffer);
-                
-                console.log('✅ PDF sent successfully!');
-                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-                return;
-            } else {
-                console.log('❌ Invalid signature. First 50 chars:', pdfBuffer.slice(0, 50).toString());
-            }
-        }
-
-        // If everything failed, take screenshot for debugging
-        console.log('⚠️  All methods failed. Taking screenshot for debugging...');
-        const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
-        
-        throw new Error(`Could not extract valid PDF. Page might require manual authentication. Screenshot saved in logs.`);
+        throw new Error('PDF not detected in network traffic. Page might be using dynamic loading or blob URLs.');
 
     } catch (error) {
         console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -240,37 +287,42 @@ app.get('/pdf', async (req, res) => {
             status: "fail", 
             error: error.message,
             url: targetUrl,
-            hint: "The PDF URL might require authentication cookies from a logged-in session",
             timestamp: new Date().toISOString()
         });
     } finally {
         if (browser) {
             await browser.close();
+            console.log('🔒 Browser closed');
         }
     }
 });
 
 app.get('/health', (req, res) => {
     res.json({ 
-        status: 'ok', 
-        service: 'Authenticated PDF Extractor',
-        version: '3.0.0',
-        timestamp: new Date().toISOString()
+        status: 'ok',
+        mode: 'stealth',
+        service: 'PDF Extractor with Bot Bypass',
+        version: '4.0.0'
     });
 });
 
 app.get('/', (req, res) => {
     res.json({
-        service: 'Authenticated PDF Extractor API',
-        description: 'Extracts PDFs from authenticated/protected URLs',
-        usage: '/pdf?url=<encoded_url>',
-        note: 'Handles cookies, sessions, and authentication automatically'
+        service: 'Stealth PDF Extractor',
+        description: 'Bypasses bot detection to extract PDFs',
+        usage: 'GET /pdf?url=<encoded_url>',
+        features: [
+            'Anti-bot detection',
+            'Real browser simulation',
+            'Network traffic capture',
+            'Proxy support'
+        ]
     });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`✅ Authenticated PDF Extractor running on ${PORT}`);
+    console.log(`🕵️  Stealth PDF Extractor LIVE on port ${PORT}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 });
