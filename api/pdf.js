@@ -22,8 +22,8 @@ app.get('/pdf', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // standard PDF resolution set karna
-        await page.setViewport({ width: 1280, height: 720 });
+        // Browser ke actual size ko set karna - yeh PDF dimensions ko decide karega
+        await page.setViewport({ width: 1920, height: 1080 });
 
         await page.authenticate({ username: 'purevpn0s11340994', password: 'ak3t35fp' });
         await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
@@ -31,23 +31,6 @@ app.get('/pdf', async (req, res) => {
 
         // URL par jana aur network shaant hone ka wait karna
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 90000 });
-
-        // CSS Inject karke "Screenshot" mode ko deactivate karna aur PDF pages force karna
-        await page.addStyleTag({
-            content: `
-                @page { size: A4 landscape; margin: 0; }
-                @media print {
-                    canvas, img, .slide, div[class*="slide"] { 
-                        page-break-after: always !important; 
-                        break-after: page !important;
-                        display: block !important;
-                        width: 100% !important;
-                        height: auto !important;
-                    }
-                    .no-print, #header, #footer, .sidebar { display: none !important; }
-                }
-            `
-        });
 
         // Saare dynamic content (slides) load karne ke liye niche tak scroll
         await page.evaluate(async () => {
@@ -68,15 +51,24 @@ app.get('/pdf', async (req, res) => {
         });
 
         // Buffering ke liye wait taaki PDF corrupt na ho
-        await new Promise(r => setTimeout(r, 6000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // Asli PDF generate karna, Screenshot nahi!
+        // Page ke actual dimensions ko detect karna
+        const dimensions = await page.evaluate(() => {
+            return {
+                width: document.documentElement.scrollWidth,
+                height: document.documentElement.scrollHeight,
+            };
+        });
+
+        // PDF generate karna with actual page dimensions - browser jaisa!
         const pdfBuffer = await page.pdf({ 
-            format: 'A4',
-            landscape: true,
+            width: `${dimensions.width}px`,
+            height: `${dimensions.height}px`,
             printBackground: true,
             preferCSSPageSize: false,
-            displayHeaderFooter: false
+            displayHeaderFooter: false,
+            pageRanges: '1-999999' // Saare pages include karna
         });
 
         res.setHeader('Content-Type', 'application/pdf');
