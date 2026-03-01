@@ -1,46 +1,59 @@
-const fetch = require('node-fetch');
+const express = require('express');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const app = express();
 
-module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  
-  try {
+puppeteer.use(StealthPlugin());
+
+app.get('/pdf', async (req, res) => {
     const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: 'URL missing' });
+    if (!targetUrl) return res.status(400).send('URL missing');
 
-    const BROWSERLESS_KEY = "2U40pteEEfgboGxc0c0a37611fd811886f47819d326726eaa";
-    
-    // Proxy ko Browserless ke connection string mein daalna
-    // Format: &proxy=http://user:pass@host:port
-    const proxyStr = "http://purevpn0s11340994:ak3t35fp@Px031901.pointtoserver.com:10780";
-    const endpoint = `https://production-sfo.browserless.io/pdf?token=${BROWSERLESS_KEY}&stealth=true&--proxy-server=${proxyStr}`;
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            executablePath: '/usr/bin/google-chrome-stable', // Docker environment ke liye
+            headless: "new",
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--proxy-server=Px031901.pointtoserver.com:10780'
+            ]
+        });
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: decodeURIComponent(targetUrl),
-        options: { format: 'A4', printBackground: true },
-        gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
-        setExtraHTTPHeaders: {
-          "Referer": "https://cwmediabkt99.crwilladmin.com/",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        }
-      })
-    });
+        const page = await browser.newPage();
+        
+        // Proxy Authentication
+        await page.authenticate({
+            username: 'purevpn0s11340994',
+            password: 'ak3t35fp'
+        });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Browserless Proxy Block: ${response.status} - ${errText}`);
+        // Stealth Headers taaki site block na kare
+        await page.setExtraHTTPHeaders({
+            "Referer": "https://cwmediabkt99.crwilladmin.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        });
+
+        // URL par jana
+        await page.goto(decodeURIComponent(targetUrl), { 
+            waitUntil: 'networkidle2', 
+            timeout: 60000 
+        });
+        
+        const pdf = await page.pdf({ format: 'A4', printBackground: true });
+        
+        res.contentType("application/pdf");
+        res.send(pdf);
+
+    } catch (e) {
+        console.error(e);
+        res.status(500).send("Error: " + e.message);
+    } finally {
+        if (browser) await browser.close();
     }
+});
 
-    const buffer = await response.buffer();
-    res.setHeader('Content-Type', 'application/pdf');
-    res.send(buffer);
-
-  } catch (error) {
-    res.status(500).json({ error: 'Ultimate Bypass Failed', message: error.message });
-  }
-};
+// Render dynamic port use karta hai
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
