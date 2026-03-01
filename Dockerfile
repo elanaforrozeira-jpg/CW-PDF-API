@@ -1,25 +1,36 @@
-# Puppeteer ke official image ka use kar rahe hain jisme Chrome pehle se hota hai
-FROM ghcr.io/puppeteer/puppeteer:latest
+# Halka version use kar rahe hain
+FROM node:18-slim
 
-# Root user banna zaroori hai taaki libraries install ho sakein
-USER root
+# Chrome ki zaroori libraries install karna
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    ca-certificates \
+    procps \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
-# App directory set karna
 WORKDIR /app
-
-# Sabse pehle dependencies install karna
 COPY package*.json ./
 RUN npm install
-
-# Baaki saara code copy karna
 COPY . .
 
-# Environment variable set karna taaki Puppeteer ko pata chale Chrome kahan hai
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
-# Port expose karna jo Render provide karega
 EXPOSE 3000
-
-# Server start karne ki command
 CMD ["node", "api/pdf.js"]
