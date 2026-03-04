@@ -1,15 +1,9 @@
-const express = require('express');
-const { getPage, releasePage } = require('./browserPool');
-const app = express();
+// Existing code...
 
-app.get('/pdf', async (req, res) => {
-    const rawUrl = req.query.url;
-
-    if (!rawUrl) {
-        return res.status(400).json({
-            status: 'fail',
-            message: 'URL parameter missing'
-        });
+// After line 15, where targetUrl is defined
+if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+    if (!targetUrl.startsWith('/')) {
+        targetUrl = '/' + targetUrl;
     }
 
     let targetUrl = decodeURIComponent(rawUrl).trim();
@@ -190,11 +184,9 @@ app.get('/pdf', async (req, res) => {
     } finally {
         if (pageHandle) await releasePage(pageHandle.page, pageHandle.entry);
     }
-});
+} catch (error) {
+    console.error(error);
+    throw { status: 400, message: 'Invalid URL or domain'; }
+}
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ API running on ${PORT}`));
+// Continue with existing code...
