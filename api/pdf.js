@@ -12,7 +12,34 @@ app.get('/pdf', async (req, res) => {
         });
     }
 
-    const targetUrl = decodeURIComponent(rawUrl).trim();
+    let targetUrl = decodeURIComponent(rawUrl).trim();
+
+    // Auto-detect and normalize URL format
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        // Assume it's a path for cwmediabkt99.crwilladmin.com
+        if (!targetUrl.startsWith('/')) {
+            targetUrl = '/' + targetUrl;
+        }
+        targetUrl = 'https://cwmediabkt99.crwilladmin.com' + targetUrl;
+        console.log('🔧 Normalized URL to:', targetUrl);
+    }
+
+    // Validate it's from cwmediabkt99.crwilladmin.com domain
+    try {
+        const parsedUrl = new URL(targetUrl);
+        if (parsedUrl.hostname !== 'cwmediabkt99.crwilladmin.com') {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Only cwmediabkt99.crwilladmin.com domain is supported'
+            });
+        }
+    } catch (urlError) {
+        return res.status(400).json({
+            status: 'fail',
+            message: 'Invalid URL format: ' + urlError.message
+        });
+    }
+
     let pageHandle;
 
     try {
