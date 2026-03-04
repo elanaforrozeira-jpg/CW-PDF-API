@@ -33,4 +33,4 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 EXPOSE 3000
-CMD ["node", "api/pdf.js"]
+CMD ["node", "--max-old-space-size=450", "api/pdf.js"]

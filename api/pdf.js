@@ -19,67 +19,67 @@ app.get('/pdf', async (req, res) => {
         console.log('🚀 Starting PDF download:', targetUrl);
 
         pageHandle = await getPage();
-        const { page, entry } = pageHandle;
+        const { page } = pageHandle;
 
-        // OPTIONAL: Navigate to establish session first (only if same domain)
+        // Navigate to establish session first (only if same domain)
         try {
             const parsedUrl = new URL(targetUrl);
             if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
                 console.log('🌐 Establishing session...');
                 await page.goto('https://cwmediabkt99.crwilladmin.com/', {
                     waitUntil: 'domcontentloaded',
-                    timeout: 30000
+                    timeout: 15000
                 });
-                await new Promise(r => setTimeout(r, 1000));
             }
         } catch (parseError) {
-            // Invalid URL format; let page.goto handle the error below
+            // Invalid URL format; proceed without session establishment
             console.warn('⚠️ URL parse error during session establishment:', parseError.message);
         }
 
-        console.log('📥 Fetching PDF directly via page.goto()...');
+        console.log('📥 Fetching PDF using browser context...');
 
-        // Enable request interception to ensure headers on all requests
-        await page.setRequestInterception(true);
-        const handleRequest = interceptedRequest => {
-            interceptedRequest.continue({
-                headers: {
-                    ...interceptedRequest.headers(),
-                    'Accept': 'application/pdf,*/*'
+        // Fetch PDF inside browser context using native fetch (proxy auth inherited)
+        const pdfData = await page.evaluate(async (url) => {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: {
+                        'Accept': 'application/pdf,*/*'
+                    }
+                });
+
+                if (!response.ok) {
+                    return { error: `HTTP ${response.status}` };
                 }
-            });
-        };
-        page.on('request', handleRequest);
 
-        let response;
-        try {
-            // Navigate directly to PDF URL - proxy authentication will work!
-            response = await page.goto(targetUrl, {
-                waitUntil: 'networkidle0',
-                timeout: 60000
-            });
-        } finally {
-            page.off('request', handleRequest);
-            await page.setRequestInterception(false);
+                const blob = await response.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+
+                return {
+                    data: Array.from(uint8Array),
+                    size: uint8Array.length,
+                    type: blob.type
+                };
+            } catch (e) {
+                return { error: e.message };
+            }
+        }, targetUrl);
+
+        if (pdfData.error) {
+            throw new Error('Fetch failed: ' + pdfData.error);
         }
 
-        if (!response || !response.ok()) {
-            const status = response ? response.status() : 'No response';
-            throw new Error(`Failed to fetch PDF: HTTP ${status}`);
+        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
+        console.log('📄 Content-Type:', pdfData.type);
+
+        if (pdfData.size < 1000) {
+            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
         }
 
-        // Get PDF buffer directly
-        const pdfBuffer = await response.buffer();
-
-        // Verify content type
-        const contentType = response.headers()['content-type'] || '';
-        console.log('📄 Content-Type:', contentType);
-
-        console.log('📦 PDF fetched! Size:', pdfBuffer.length, 'bytes');
-
-        if (pdfBuffer.length < 1000) {
-            throw new Error('PDF too small: ' + pdfBuffer.length + ' bytes');
-        }
+        // Convert array back to Buffer
+        const pdfBuffer = Buffer.from(pdfData.data);
 
         // Verify PDF
         const signature = pdfBuffer.slice(0, 5).toString();
