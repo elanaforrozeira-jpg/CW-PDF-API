@@ -1,26 +1,102 @@
 const express = require('express');
 const puppeteer = require('puppeteer-core');
+const https = require('https');
+const http = require('http');
 const zlib = require('zlib');
+const { URL } = require('url');
 const app = express();
 
-app.get('/pdf', async (req, res) => {
-    const rawUrl = req.query.url;
-    const compress = req.query.compress === 'true';
-    
-    if (!rawUrl) {
-        return res.status(400).json({ 
-            status: "fail", 
-            message: "URL parameter missing" 
+// Proxy configuration
+const PROXY_HOST = 'Px031901.pointtoserver.com';
+const PROXY_PORT = 10780;
+const PROXY_USER = 'purevpn0s11340994';
+const PROXY_PASS = 'ak3t35fp';
+
+// Function to download PDF via proxy with streaming
+async function downloadPDFWithProxy(targetUrl, cookies = '') {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(targetUrl);
+        
+        const proxyOptions = {
+            host: PROXY_HOST,
+            port: PROXY_PORT,
+            method: 'GET',
+            path: targetUrl,
+            headers: {
+                'Host': parsedUrl.host,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/pdf,application/octet-stream,*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://cwmediabkt99.crwilladmin.com/',
+                'Connection': 'keep-alive',
+                'Proxy-Authorization': 'Basic ' + Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64')
+            }
+        };
+
+        // Add cookies if available
+        if (cookies) {
+            proxyOptions.headers['Cookie'] = cookies;
+        }
+
+        console.log('📡 Making proxy request to:', targetUrl);
+
+        const req = http.request(proxyOptions, (res) => {
+            console.log('📊 Response status:', res.statusCode);
+            console.log('📋 Response headers:', res.headers);
+
+            if (res.statusCode === 302 || res.statusCode === 301) {
+                const redirectUrl = res.headers.location;
+                console.log('🔄 Following redirect to:', redirectUrl);
+                return downloadPDFWithProxy(redirectUrl, cookies)
+                    .then(resolve)
+                    .catch(reject);
+            }
+
+            if (res.statusCode !== 200) {
+                let errorBody = '';
+                res.on('data', chunk => errorBody += chunk.toString());
+                res.on('end', () => {
+                    reject(new Error(`HTTP ${res.statusCode}: ${errorBody.substring(0, 500)}`));
+                });
+                return;
+            }
+
+            const chunks = [];
+            let downloadedSize = 0;
+
+            res.on('data', (chunk) => {
+                chunks.push(chunk);
+                downloadedSize += chunk.length;
+                if (downloadedSize % (1024 * 1024) === 0) { // Log every 1MB
+                    console.log(`📥 Downloaded: ${(downloadedSize / 1024 / 1024).toFixed(2)} MB`);
+                }
+            });
+
+            res.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                console.log('✅ Download complete! Total size:', (buffer.length / 1024 / 1024).toFixed(2), 'MB');
+                resolve(buffer);
+            });
+
+            res.on('error', reject);
         });
-    }
-    
-    const targetUrl = decodeURIComponent(rawUrl).trim();
+
+        req.on('error', reject);
+        req.setTimeout(120000, () => { // 2 minute timeout
+            req.destroy();
+            reject(new Error('Request timeout'));
+        });
+
+        req.end();
+    });
+}
+
+// Function to get cookies using Puppeteer (lightweight session establishment)
+async function getCookies(domain) {
     let browser;
-
     try {
-        console.log('🚀 Starting PDF download:', targetUrl);
-        if (compress) console.log('🗜️  Compression enabled');
-
+        console.log('🍪 Getting cookies for:', domain);
+        
         browser = await puppeteer.launch({
             executablePath: '/usr/bin/google-chrome-stable',
             headless: "new",
@@ -43,128 +119,85 @@ app.get('/pdf', async (req, res) => {
             password: 'ak3t35fp' 
         });
 
-        // Enhanced stealth
-        await page.evaluateOnNewDocument(() => {
-            delete navigator.__proto__.webdriver;
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            window.chrome = { runtime: {} };
-        });
-
         await page.setUserAgent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         );
 
-        // Set additional headers
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-User': '?1',
-            'Sec-Fetch-Dest': 'document',
-            'Upgrade-Insecure-Requests': '1'
-        });
-
-        // Navigate to main domain first to establish cookies/session
-        console.log('🌐 Establishing session on main domain...');
-        const mainDomain = 'https://cwmediabkt99.crwilladmin.com/';
-        
-        await page.goto(mainDomain, { 
-            waitUntil: 'networkidle2',
+        // Visit main domain to get cookies
+        await page.goto(domain, { 
+            waitUntil: 'domcontentloaded',
             timeout: 30000 
         });
 
-        console.log('⏳ Waiting for session establishment...');
-        await page.waitForTimeout(3000);
-
-        // Get cookies after session
         const cookies = await page.cookies();
-        console.log('🍪 Cookies received:', cookies.length);
+        console.log('🍪 Received', cookies.length, 'cookies');
 
-        console.log('📥 Fetching PDF with authenticated session...');
+        // Format cookies for HTTP header
+        const cookieString = cookies
+            .map(cookie => `${cookie.name}=${cookie.value}`)
+            .join('; ');
 
-        // Enhanced fetch with proper headers and credentials
-        const pdfData = await page.evaluate(async (url, domain) => {
+        return cookieString;
+
+    } finally {
+        if (browser) await browser.close();
+    }
+}
+
+app.get('/pdf', async (req, res) => {
+    const rawUrl = req.query.url;
+    const compress = req.query.compress === 'true';
+    const useCookies = req.query.cookies !== 'false'; // Default true
+    
+    if (!rawUrl) {
+        return res.status(400).json({ 
+            status: "fail", 
+            message: "URL parameter missing" 
+        });
+    }
+    
+    const targetUrl = decodeURIComponent(rawUrl).trim();
+
+    try {
+        console.log('🚀 Starting PDF download:', targetUrl);
+        if (compress) console.log('🗜️  Compression enabled');
+
+        let cookies = '';
+        
+        // Get cookies if needed (for authenticated PDFs)
+        if (useCookies) {
             try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include',
-                    mode: 'cors',
-                    cache: 'no-cache',
-                    headers: {
-                        'Accept': 'application/pdf,application/octet-stream,*/*',
-                        'Referer': domain,
-                        'Origin': domain,
-                        'Sec-Fetch-Site': 'same-origin',
-                        'Sec-Fetch-Mode': 'no-cors',
-                        'Sec-Fetch-Dest': 'document'
-                    }
-                });
-
-                console.log('Response status:', response.status);
-                console.log('Response headers:', [...response.headers.entries()]);
-
-                if (!response.ok) {
-                    const text = await response.text();
-                    return { 
-                        error: `HTTP ${response.status}`,
-                        body: text.substring(0, 500)
-                    };
-                }
-
-                const blob = await response.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-                const uint8Array = new Uint8Array(arrayBuffer);
-                
-                return {
-                    data: Array.from(uint8Array),
-                    size: uint8Array.length,
-                    type: blob.type || response.headers.get('content-type')
-                };
-            } catch (e) {
-                return { 
-                    error: e.message,
-                    stack: e.stack
-                };
+                const mainDomain = 'https://cwmediabkt99.crwilladmin.com/';
+                cookies = await getCookies(mainDomain);
+            } catch (cookieError) {
+                console.warn('⚠️  Cookie retrieval failed, continuing without cookies:', cookieError.message);
             }
-        }, targetUrl, mainDomain);
-
-        if (pdfData.error) {
-            console.error('❌ Fetch error details:', pdfData);
-            throw new Error('Fetch failed: ' + pdfData.error + (pdfData.body ? '\nBody: ' + pdfData.body : ''));
         }
 
-        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
-        console.log('📄 Content-Type:', pdfData.type);
+        // Download PDF via proxy with streaming
+        let pdfBuffer = await downloadPDFWithProxy(targetUrl, cookies);
 
-        if (pdfData.size < 1000) {
-            throw new Error('PDF too small: ' + pdfData.size + ' bytes (might be error page)');
-        }
-
-        // Convert array back to Buffer
-        let pdfBuffer = Buffer.from(pdfData.data);
-
-        // Verify PDF
+        // Verify PDF signature
         const signature = pdfBuffer.slice(0, 5).toString();
-        console.log('🔍 Signature:', signature);
+        console.log('🔍 File signature:', signature);
 
         if (!signature.includes('%PDF')) {
-            const preview = pdfBuffer.slice(0, 200).toString();
+            const preview = pdfBuffer.slice(0, 500).toString();
             console.log('❌ Not a PDF! Preview:', preview);
             throw new Error('Downloaded file is not a PDF');
         }
 
         console.log('✅ Valid PDF confirmed!');
+        console.log('📦 PDF size:', (pdfBuffer.length / 1024 / 1024).toFixed(2), 'MB');
 
         // Compress if requested
         if (compress) {
             console.log('🗜️  Compressing PDF...');
             const originalSize = pdfBuffer.length;
             pdfBuffer = zlib.gzipSync(pdfBuffer, { level: 6 });
-            console.log('📦 Compressed size:', pdfBuffer.length, 'bytes');
-            console.log('💾 Compression ratio:', ((1 - pdfBuffer.length / originalSize) * 100).toFixed(2) + '%');
+            const compressedSize = pdfBuffer.length;
+            console.log('📦 Compressed size:', (compressedSize / 1024 / 1024).toFixed(2), 'MB');
+            console.log('💾 Compression ratio:', ((1 - compressedSize / originalSize) * 100).toFixed(2) + '%');
         }
 
         // Set response headers
@@ -189,14 +222,12 @@ app.get('/pdf', async (req, res) => {
             error: error.message,
             url: targetUrl
         });
-    } finally {
-        if (browser) await browser.close();
     }
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', method: 'streaming' });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ API running on ${PORT}`));
+app.listen(PORT, () => console.log(`✅ API running on ${PORT} with streaming support`));
