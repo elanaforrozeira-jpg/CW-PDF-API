@@ -45,7 +45,7 @@ app.get('/pdf', async (req, res) => {
             console.log(`📥 Fetch attempt ${attempt}/${MAX_RETRIES} for: ${targetUrl}`);
 
             // Fetch PDF inside browser context using native fetch (proxy auth inherited)
-            pdfData = await page.evaluate(async (url) => {
+            pdfData = await pageHandle.page.evaluate(async (url) => {
                 try {
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -85,9 +85,31 @@ app.get('/pdf', async (req, res) => {
             console.warn(`⚠️ Attempt ${attempt} failed: ${pdfData.error} (URL: ${targetUrl})`);
 
             if (is502 && attempt < MAX_RETRIES) {
-                const delay = 1000 * attempt;
-                console.log(`🔄 502 error - retrying in ${delay}ms...`);
+                const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+                console.log(`🔄 502 error - rotating proxy and retrying in ${delay}ms...`);
+
+                // Release current page and acquire a new one backed by a different proxy
+                const oldHandle = pageHandle;
+                pageHandle = null; // prevent double-release in finally if getPage() throws
+                await releasePage(oldHandle.page, oldHandle.entry);
+
                 await new Promise(r => setTimeout(r, delay));
+
+                pageHandle = await getPage();
+
+                // Re-establish session on the new page/proxy
+                try {
+                    const parsedUrl = new URL(targetUrl);
+                    if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
+                        console.log('🌐 Re-establishing session with new proxy...');
+                        await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                            waitUntil: 'domcontentloaded',
+                            timeout: 30000
+                        });
+                    }
+                } catch (parseError) {
+                    console.warn('⚠️ URL parse error during session establishment:', parseError.message);
+                }
             } else if (!is502) {
                 // Non-502 error (e.g. 404) — no point retrying
                 break;

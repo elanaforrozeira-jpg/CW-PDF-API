@@ -2,28 +2,47 @@ const puppeteer = require('puppeteer-core');
 
 const MAX_BROWSERS = 3;
 
-const LAUNCH_ARGS = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--no-zygote',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-software-rasterizer',
-    '--disable-blink-features=AutomationControlled',
-    '--proxy-server=Px031901.pointtoserver.com:10780'
+const PROXY_POOL = [
+    { host: 'px340403.pointtoserver.com:10780',  username: 'purevpn0s12456771', password: 'fc0bdh0p' },
+    { host: 'px1400403.pointtoserver.com:10780', username: 'purevpn0s12456771', password: 'fc0bdh0p' },
+    { host: 'px173007.pointtoserver.com:10780',  username: 'purevpn0s12456771', password: 'fc0bdh0p' },
+    { host: 'px350401.pointtoserver.com:10780',  username: 'purevpn0s11340994', password: 'ak3t35fp' },
+    { host: 'Px031901.pointtoserver.com:10780',  username: 'purevpn0s11340994', password: 'ak3t35fp' }
 ];
+
+let currentProxyIndex = 0;
+
+function getNextProxy() {
+    const proxy = PROXY_POOL[currentProxyIndex];
+    currentProxyIndex = (currentProxyIndex + 1) % PROXY_POOL.length;
+    return proxy;
+}
 
 const pool = [];
 
 async function createBrowser() {
+    const proxyIndex = currentProxyIndex;
+    const proxyConfig = getNextProxy();
+    console.log(`🌐 Using proxy: ${proxyConfig.host.split(':')[0]}`);
+    console.log(`📍 Proxy rotation: ${proxyIndex + 1}/${PROXY_POOL.length}`);
+
     const browser = await puppeteer.launch({
         executablePath: '/usr/bin/google-chrome-stable',
         headless: 'new',
-        args: LAUNCH_ARGS,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--no-zygote',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-blink-features=AutomationControlled',
+            `--proxy-server=${proxyConfig.host}`
+        ],
         ignoreDefaultArgs: ['--enable-automation']
     });
 
-    const entry = { browser, pages: 0 };
+    const entry = { browser, pages: 0, proxyConfig };
 
     browser.on('disconnected', () => {
         const idx = pool.indexOf(entry);
@@ -56,8 +75,8 @@ async function getPage(retries = 0) {
     const page = await entry.browser.newPage();
 
     await page.authenticate({
-        username: 'purevpn0s11340994',
-        password: 'ak3t35fp'
+        username: entry.proxyConfig.username,
+        password: entry.proxyConfig.password
     });
 
     await page.evaluateOnNewDocument(() => {
