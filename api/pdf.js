@@ -1,184 +1,312 @@
-const express = require('express');
-const { getPage, releasePage } = require('./browserPool');
-const app = express();
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
-const CW_HOST = 'cwmediabkt99.crwilladmin.com';
-const CW_ORIGIN = `https://${CW_HOST}`;
-const MAX_RETRIES = 4;
+// Proxy pool configuration
+const PROXIES = [
+  process.env.PROXY_1,
+  process.env.PROXY_2,
+  process.env.PROXY_3,
+  process.env.PROXY_4,
+  process.env.PROXY_5,
+].filter(Boolean);
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+let currentProxyIndex = 0;
+
+function getNextProxy() {
+  if (PROXIES.length === 0) return null;
+  const proxy = PROXIES[currentProxyIndex];
+  currentProxyIndex = (currentProxyIndex + 1) % PROXIES.length;
+  return proxy;
 }
 
-function normalizeUrl(rawUrl) {
-  let u = decodeURIComponent(rawUrl || '').trim();
-  if (!u) return null;
-  if (!/^https?:\/\//i.test(u)) {
-    u = `${CW_ORIGIN}${u.startsWith('/') ? '' : '/'}${u}`;
-  }
-  return u;
-}
-
-function isPdfBuffer(buf) {
-  const sig = buf.slice(0, 8).toString('utf8');
-  return sig.includes('%PDF');
-}
-
-function safePreviewFromBuffer(buf) {
-  return buf.slice(0, 350).toString('utf8').replace(/\s+/g, ' ').trim();
-}
-
-app.get('/pdf', async (req, res) => {
-  const rawUrl = req.query.url;
-  if (!rawUrl) {
-    return res.status(400).json({ status: 'fail', message: 'URL parameter missing' });
-  }
-
-  const targetUrl = normalizeUrl(rawUrl);
-  if (!targetUrl) {
-    return res.status(400).json({ status: 'fail', message: 'Invalid URL' });
-  }
-
+// Improved URL normalization
+function normalizeUrl(url) {
   try {
-    const parsed = new URL(targetUrl);
-    if (parsed.hostname !== CW_HOST) {
-      return res.status(400).json({ status: 'fail', message: `Only ${CW_HOST} is supported` });
+    // Remove extra whitespace
+    url = url.trim();
+    
+    // If it's just a path, add the CW domain
+    if (url.startsWith('/')) {
+      return `https://cwmediabkt99.crwilladmin.com${url}`;
     }
-  } catch (e) {
-    return res.status(400).json({ status: 'fail', message: `Invalid URL: ${e.message}` });
+    
+    // If it already has the CW domain, return as-is
+    if (url.includes('cwmediabkt99.crwilladmin.com')) {
+      return url;
+    }
+    
+    // If it has a different domain but includes the path pattern, extract and rebuild
+    const pathMatch = url.match(/\/class-attachment\/[^"'\s]+/);
+    if (pathMatch) {
+      return `https://cwmediabkt99.crwilladmin.com${pathMatch[0]}`;
+    }
+    
+    // Otherwise, assume it's a full URL and return as-is
+    return url;
+  } catch (error) {
+    console.error('URL normalization error:', error);
+    return url;
   }
+}
 
-  let lastErr = null;
+// Improved domain validation
+function isValidCWDomain(url) {
+  try {
+    const urlObj = new URL(url);
+    // More flexible domain validation - accept the CW domain and common CDN patterns
+    const validDomains = [
+      'cwmediabkt99.crwilladmin.com',
+      'crwilladmin.com',
+      'd3js...cloudfront.net' // In case CloudFront is used
+    ];
+    
+    return validDomains.some(domain => 
+      urlObj.hostname === domain || 
+      urlObj.hostname.endsWith('.' + domain)
+    );
+  } catch {
+    return false;
+  }
+}
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    let pageHandle = null;
-    try {
-      console.log(`🚀 Attempt ${attempt}/${MAX_RETRIES} - Downloading: ${targetUrl}`);
-      pageHandle = await getPage();
-      const { page } = pageHandle;
+module.exports = async (req, res) => {
+  let browser = null;
+  const startTime = Date.now();
+  
+  try {
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({ error: 'Missing url parameter' });
+    }
 
-      // ---- 1) Warm session on CW origin ----
-      console.log('🌐 Establishing CW session...');
-      await page.goto(`${CW_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await sleep(800);
+    const normalizedUrl = normalizeUrl(url);
+    console.log(`[${new Date().toISOString()}] Processing URL: ${normalizedUrl}`);
+    
+    // Validate domain
+    if (!isValidCWDomain(normalizedUrl)) {
+      console.error(`Invalid domain for URL: ${normalizedUrl}`);
+      return res.status(400).json({ 
+        error: 'Invalid domain - only CW media URLs are allowed',
+        providedUrl: url,
+        normalizedUrl: normalizedUrl
+      });
+    }
 
-      // ---- 2) Try fetch in browser context with strong headers ----
-      console.log('📥 Fetching via browser fetch + auth headers...');
-      const fetched = await page.evaluate(async ({ url, origin }) => {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 45000);
+    // Get proxy configuration
+    const proxy = getNextProxy();
+    const proxyConfig = proxy ? new URL(proxy) : null;
+    
+    console.log(`[${new Date().toISOString()}] Using proxy: ${proxy ? proxyConfig.hostname : 'none'}`);
 
-          const resp = await fetch(url, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/pdf,*/*',
-              'Referer': `${origin}/`,
-              'Origin': origin,
-              'Pragma': 'no-cache',
-              'Cache-Control': 'no-cache',
-              'Sec-Fetch-Site': 'same-origin',
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Dest': 'empty'
-            },
-            signal: controller.signal
-          });
+    // Launch browser with extended timeout
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        ...(proxyConfig ? [`--proxy-server=${proxyConfig.protocol}//${proxyConfig.host}`] : []),
+      ],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
+    });
 
-          clearTimeout(timeoutId);
+    const page = await browser.newPage();
+    
+    // Set longer timeout
+    page.setDefaultTimeout(120000); // 2 minutes
+    page.setDefaultNavigationTimeout(120000);
+    
+    // Authenticate proxy if configured
+    if (proxyConfig && proxyConfig.username && proxyConfig.password) {
+      await page.authenticate({
+        username: decodeURIComponent(proxyConfig.username),
+        password: decodeURIComponent(proxyConfig.password),
+      });
+    }
 
-          const contentType = resp.headers.get('content-type') || '';
-          const status = resp.status;
+    // Enable CDP session for network interception
+    const client = await page.target().createCDPSession();
+    await client.send('Network.enable');
+    await client.send('Page.enable');
 
-          const ab = await resp.arrayBuffer();
-          const bytes = new Uint8Array(ab);
+    let pdfRequestId = null;
+    let pdfData = null;
 
-          return {
-            ok: resp.ok,
-            status,
-            contentType,
-            size: bytes.length,
-            data: Array.from(bytes.slice(0, Math.min(bytes.length, 30_000_000)))
-          };
-        } catch (e) {
-          return { ok: false, status: 0, error: e.message || 'fetch failed' };
-        }
-      }, { url: targetUrl, origin: CW_ORIGIN });
-
-      let pdfBuffer = null;
-      let reason = '';
-
-      if (fetched && fetched.data) {
-        pdfBuffer = Buffer.from(fetched.data);
-        if (isPdfBuffer(pdfBuffer)) {
-          console.log(`✅ PDF via fetch | size=${pdfBuffer.length} | status=${fetched.status}`);
-        } else {
-          reason = `fetch-not-pdf status=${fetched.status} type=${fetched.contentType} preview=${safePreviewFromBuffer(pdfBuffer)}`;
-          pdfBuffer = null;
-        }
-      } else {
-        reason = `fetch-error status=${fetched?.status || 0} err=${fetched?.error || 'unknown'}`;
+    // Listen for PDF responses
+    client.on('Network.responseReceived', (params) => {
+      const response = params.response;
+      if (response.url === normalizedUrl && 
+          response.mimeType === 'application/pdf' &&
+          response.status === 200) {
+        pdfRequestId = params.requestId;
+        console.log(`[${new Date().toISOString()}] PDF response detected: ${pdfRequestId}`);
       }
+    });
 
-      // ---- 3) Fallback: direct navigation response buffer ----
-      if (!pdfBuffer) {
-        console.log(`↪️ Fallback page.goto() because: ${reason}`);
-        const navResp = await page.goto(targetUrl, {
-          waitUntil: 'networkidle0',
-          timeout: 45000
+    // Navigate with retry logic
+    let attempt = 0;
+    const maxAttempts = 3;
+    let navigationSuccess = false;
+    
+    while (attempt < maxAttempts && !navigationSuccess) {
+      attempt++;
+      console.log(`[${new Date().toISOString()}] Attempt ${attempt}/${maxAttempts} - Navigating to: ${normalizedUrl}`);
+      
+      try {
+        // Use AbortController with longer timeout
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), 90000); // 90 seconds
+        
+        const response = await page.goto(normalizedUrl, {
+          waitUntil: 'networkidle2',
+          timeout: 90000,
+          signal: abortController.signal
         });
-
-        if (navResp) {
-          const buf = await navResp.buffer();
-          if (isPdfBuffer(buf)) {
-            pdfBuffer = buf;
-            console.log(`✅ PDF via goto fallback | size=${pdfBuffer.length} | status=${navResp.status()}`);
-          } else {
-            reason = `goto-not-pdf status=${navResp.status()} type=${navResp.headers()['content-type'] || ''} preview=${safePreviewFromBuffer(buf)}`;
+        
+        clearTimeout(timeoutId);
+        
+        const status = response.status();
+        const contentType = response.headers()['content-type'] || '';
+        
+        console.log(`[${new Date().toISOString()}] Response: status=${status}, contentType=${contentType}`);
+        
+        if (status === 200 && contentType.includes('application/pdf')) {
+          navigationSuccess = true;
+          console.log(`[${new Date().toISOString()}] Navigation successful`);
+        } else if (status === 403 || status === 503) {
+          console.log(`[${new Date().toISOString()}] Got ${status}, rotating proxy and retrying...`);
+          if (attempt < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt)); // Exponential backoff
+            await browser.close();
+            
+            // Get new proxy and relaunch
+            const newProxy = getNextProxy();
+            const newProxyConfig = newProxy ? new URL(newProxy) : null;
+            
+            browser = await puppeteer.launch({
+              args: [
+                ...chromium.args,
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote',
+                ...(newProxyConfig ? [`--proxy-server=${newProxyConfig.protocol}//${newProxyConfig.host}`] : []),
+              ],
+              defaultViewport: chromium.defaultViewport,
+              executablePath: await chromium.executablePath(),
+              headless: chromium.headless,
+              ignoreHTTPSErrors: true,
+            });
+            
+            const newPage = await browser.newPage();
+            newPage.setDefaultTimeout(120000);
+            newPage.setDefaultNavigationTimeout(120000);
+            
+            if (newProxyConfig && newProxyConfig.username && newProxyConfig.password) {
+              await newPage.authenticate({
+                username: decodeURIComponent(newProxyConfig.username),
+                password: decodeURIComponent(newProxyConfig.password),
+              });
+            }
           }
         } else {
-          reason = `goto-no-response`;
+          throw new Error(`Non-PDF response: status=${status}, contentType=${contentType}`);
         }
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] Attempt ${attempt} failed:`, error.message);
+        
+        if (attempt >= maxAttempts) {
+          throw new Error(`All ${maxAttempts} attempts failed. Last error: ${error.message}`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
       }
+    }
 
-      if (!pdfBuffer) {
-        throw new Error(`Access denied or non-PDF response | ${reason}`);
+    // Get PDF data using CDP
+    if (pdfRequestId) {
+      try {
+        const { body, base64Encoded } = await client.send('Network.getResponseBody', {
+          requestId: pdfRequestId,
+        });
+        
+        pdfData = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body);
+        console.log(`[${new Date().toISOString()}] PDF data retrieved via CDP: ${pdfData.length} bytes`);
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] CDP fetch failed:`, error.message);
       }
+    }
 
-      // Success response
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Length', pdfBuffer.length);
-      res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.send(pdfBuffer);
+    // Fallback: Use page.evaluate if CDP didn't work
+    if (!pdfData) {
+      console.log(`[${new Date().toISOString()}] Using fallback fetch method`);
+      
+      pdfData = await page.evaluate(async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`fetch-failed status=${response.status}`);
+        }
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('pdf')) {
+          throw new Error(`fetch-not-pdf status=${response.status} type=${contentType}`);
+        }
+        
+        const arrayBuffer = await response.arrayBuffer();
+        return Array.from(new Uint8Array(arrayBuffer));
+      }, normalizedUrl);
+      
+      pdfData = Buffer.from(pdfData);
+      console.log(`[${new Date().toISOString()}] PDF data retrieved via fallback: ${pdfData.length} bytes`);
+    }
 
-      await releasePage(pageHandle.page, pageHandle.entry);
-      return;
-    } catch (e) {
-      lastErr = e;
-      console.warn(`⚠️ Attempt ${attempt} failed: ${e.message}`);
-      if (pageHandle) {
-        await releasePage(pageHandle.page, pageHandle.entry);
-      }
-      if (attempt < MAX_RETRIES) {
-        const delay = 900 * Math.pow(2, attempt - 1);
-        console.log(`🔄 Rotating proxy + retry in ${delay}ms...`);
-        await sleep(delay);
+    // Validate PDF
+    if (!pdfData || pdfData.length === 0) {
+      throw new Error('Empty PDF data received');
+    }
+    
+    if (!pdfData.toString('utf8', 0, 4).startsWith('%PDF')) {
+      throw new Error('Invalid PDF data - missing PDF header');
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[${new Date().toISOString()}] Success! PDF size: ${pdfData.length} bytes, Duration: ${duration}ms`);
+
+    // Send PDF
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', pdfData.length);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(pdfData);
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[${new Date().toISOString()}] Final failure: ${error.message}, Duration: ${duration}ms`);
+    
+    res.status(403).json({
+      error: 'Access denied or non-PDF response',
+      message: error.message,
+      url: req.query.url,
+      duration: `${duration}ms`
+    });
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        console.error('Error closing browser:', error);
       }
     }
   }
-
-  console.error(`❌ Final failure: ${lastErr?.message}`);
-  return res.status(500).json({
-    status: 'fail',
-    error: lastErr?.message || 'Failed to download PDF',
-    url: targetUrl
-  });
-});
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ API running on ${PORT}`));
+};
