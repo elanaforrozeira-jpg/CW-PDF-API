@@ -57,48 +57,61 @@ app.get('/pdf', async (req, res) => {
                 timeout: 30000
             });
 
-            console.log('📥 Downloading PDF using fetch...');
+            console.log('📥 Streaming PDF download...');
 
-            // ✅ CORRECT METHOD: Download PDF using browser's fetch API
-            const pdfData = await page.evaluate(async (url) => {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 30000);
-                    
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        headers: {
-                            'Accept': 'application/pdf,*/*'
-                        },
-                        signal: controller.signal
-                    });
-                    
-                    clearTimeout(timeoutId);
+            // ✅ STREAMING APPROACH: Use CDP to intercept response body
+            const client = await page.target().createCDPSession();
+            await client.send('Network.enable');
 
-                    if (!response.ok) {
-                        return { error: `HTTP ${response.status}`, status: response.status };
-                    }
+            let pdfStatus = 200;
+            const responseMap = {};
+            let resolveBuffer, rejectBuffer;
+            const bufferPromise = new Promise((res, rej) => {
+                resolveBuffer = res;
+                rejectBuffer = rej;
+            });
 
-                    const blob = await response.blob();
-                    const arrayBuffer = await blob.arrayBuffer();
-                    const uint8Array = new Uint8Array(arrayBuffer);
-
-                    return {
-                        data: Array.from(uint8Array),
-                        size: uint8Array.length,
-                        type: blob.type
-                    };
-                } catch (e) {
-                    return { error: e.message };
+            client.on('Network.responseReceived', (params) => {
+                if (params.response.url === targetUrl) {
+                    responseMap[params.requestId] = true;
+                    pdfStatus = params.response.status;
                 }
-            }, targetUrl);
+            });
 
-            if (pdfData.error) {
-                const status = pdfData.status || 500;
-                
-                if (status === 502) {
+            client.on('Network.loadingFinished', async (params) => {
+                if (responseMap[params.requestId]) {
+                    delete responseMap[params.requestId];
+                    try {
+                        const result = await client.send('Network.getResponseBody', {
+                            requestId: params.requestId
+                        });
+                        resolveBuffer(result.base64Encoded
+                            ? Buffer.from(result.body, 'base64')
+                            : Buffer.from(result.body));
+                    } catch (err) {
+                        console.error('❌ Failed to get response body:', err.message);
+                        rejectBuffer(err);
+                    }
+                }
+            });
+
+            // Navigate to PDF URL
+            await page.goto(targetUrl, {
+                waitUntil: 'networkidle0',
+                timeout: 60000
+            });
+
+            // Wait for CDP handler to populate buffer (5s safety timeout after navigation)
+            let pdfBuffer;
+            try {
+                pdfBuffer = await Promise.race([
+                    bufferPromise,
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('CDP buffer timeout')), 5000))
+                ]);
+            } catch (cdpErr) {
+                if (pdfStatus === 502) {
                     console.warn(`⚠️ 502 on attempt ${attempt + 1}, rotating proxy...`);
+                    await client.detach().catch(e => console.warn('Failed to detach CDP client:', e.message));
                     await releasePage(page, entry);
                     pageHandle = null;
                     if (attempt < MAX_502_RETRIES) {
@@ -110,26 +123,24 @@ app.get('/pdf', async (req, res) => {
                         message: 'Upstream server returned 502 after retries'
                     });
                 }
-                
+                await client.detach().catch(e => console.warn('Failed to detach CDP client:', e.message));
                 await releasePage(page, entry);
-                return res.status(status).json({
+                return res.status(pdfStatus >= 400 ? pdfStatus : 500).json({
                     status: 'fail',
-                    message: pdfData.error
+                    message: pdfStatus >= 400 ? `Upstream returned HTTP ${pdfStatus}` : cdpErr.message
                 });
             }
 
-            console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
+            console.log('📦 PDF streamed! Size:', pdfBuffer.length, 'bytes');
 
-            if (pdfData.size < 1000) {
+            if (pdfBuffer.length < 1000) {
+                await client.detach().catch(e => console.warn('Failed to detach CDP client:', e.message));
                 await releasePage(page, entry);
                 return res.status(500).json({
                     status: 'fail',
-                    message: 'PDF too small: ' + pdfData.size + ' bytes'
+                    message: 'PDF too small: ' + pdfBuffer.length + ' bytes'
                 });
             }
-
-            // Convert array back to Buffer
-            const pdfBuffer = Buffer.from(pdfData.data);
 
             // Verify PDF signature
             const signature = pdfBuffer.slice(0, 5).toString();
@@ -138,6 +149,7 @@ app.get('/pdf', async (req, res) => {
             if (!signature.includes('%PDF')) {
                 const preview = pdfBuffer.slice(0, 100).toString();
                 console.log('❌ Not a PDF! Preview:', preview);
+                await client.detach().catch(e => console.warn('Failed to detach CDP client:', e.message));
                 await releasePage(page, entry);
                 return res.status(500).json({
                     status: 'fail',
@@ -147,6 +159,7 @@ app.get('/pdf', async (req, res) => {
 
             console.log('✅ Valid PDF confirmed!');
 
+            await client.detach().catch(e => console.warn('Failed to detach CDP client:', e.message));
             await releasePage(page, entry);
 
             const filename = parsedUrl.pathname.split('/').pop() || 'document.pdf';
