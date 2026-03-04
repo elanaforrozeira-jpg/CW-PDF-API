@@ -28,7 +28,7 @@ app.get('/pdf', async (req, res) => {
                 console.log('🌐 Establishing session...');
                 await page.goto('https://cwmediabkt99.crwilladmin.com/', {
                     waitUntil: 'domcontentloaded',
-                    timeout: 15000
+                    timeout: 30000
                 });
             }
         } catch (parseError) {
@@ -38,37 +38,67 @@ app.get('/pdf', async (req, res) => {
 
         console.log('📥 Fetching PDF using browser context...');
 
-        // Fetch PDF inside browser context using native fetch (proxy auth inherited)
-        const pdfData = await page.evaluate(async (url) => {
-            try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/pdf,*/*'
+        const MAX_RETRIES = 3;
+        let pdfData;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            console.log(`📥 Fetch attempt ${attempt}/${MAX_RETRIES} for: ${targetUrl}`);
+
+            // Fetch PDF inside browser context using native fetch (proxy auth inherited)
+            pdfData = await page.evaluate(async (url) => {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 30000);
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/pdf,*/*'
+                        },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        return { error: `HTTP ${response.status}`, status: response.status };
                     }
-                });
 
-                if (!response.ok) {
-                    return { error: `HTTP ${response.status}` };
+                    const blob = await response.blob();
+                    const arrayBuffer = await blob.arrayBuffer();
+                    const uint8Array = new Uint8Array(arrayBuffer);
+
+                    return {
+                        data: Array.from(uint8Array),
+                        size: uint8Array.length,
+                        type: blob.type
+                    };
+                } catch (e) {
+                    return { error: e.message };
                 }
+            }, targetUrl);
 
-                const blob = await response.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-                const uint8Array = new Uint8Array(arrayBuffer);
-
-                return {
-                    data: Array.from(uint8Array),
-                    size: uint8Array.length,
-                    type: blob.type
-                };
-            } catch (e) {
-                return { error: e.message };
+            if (!pdfData.error) {
+                break; // success
             }
-        }, targetUrl);
+
+            const is502 = pdfData.status === 502;
+            console.warn(`⚠️ Attempt ${attempt} failed: ${pdfData.error} (URL: ${targetUrl})`);
+
+            if (is502 && attempt < MAX_RETRIES) {
+                const delay = 1000 * attempt;
+                console.log(`🔄 502 error - retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            } else if (!is502) {
+                // Non-502 error (e.g. 404) — no point retrying
+                break;
+            }
+        }
 
         if (pdfData.error) {
-            throw new Error('Fetch failed: ' + pdfData.error);
+            const errMsg = pdfData.status
+                ? `Fetch failed: HTTP ${pdfData.status} (${targetUrl})`
+                : `Fetch failed: ${pdfData.error} (${targetUrl})`;
+            throw new Error(errMsg);
         }
 
         console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
