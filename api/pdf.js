@@ -34,100 +34,84 @@ app.get('/pdf', async (req, res) => {
             console.warn('⚠️ URL parse error during session establishment:', parseError.message);
         }
 
-        console.log('📥 Fetching PDF using browser context...');
+        console.log('📥 Fetching PDF using CDP streaming...');
 
         const MAX_RETRIES = 3;
-        let pdfData;
+        let pdfBuffer;
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             console.log(`📥 Fetch attempt ${attempt}/${MAX_RETRIES} for: ${targetUrl}`);
 
-            // Fetch PDF inside browser context using native fetch (proxy auth inherited)
-            pdfData = await pageHandle.page.evaluate(async (url) => {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 40000);
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        headers: {
-                            'Accept': 'application/pdf,*/*'
-                        },
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
+            // Use CDP to intercept the response body directly — no array duplication
+            const client = await pageHandle.page.target().createCDPSession();
+            let requestId = null;
+            let httpStatus = null;
 
-                    if (!response.ok) {
-                        return { error: `HTTP ${response.status}`, status: response.status };
+            try {
+                await client.send('Network.enable');
+
+                client.on('Network.responseReceived', (event) => {
+                    if (event.response.url === targetUrl) {
+                        requestId = event.requestId;
+                        httpStatus = event.response.status;
+                    }
+                });
+
+                await pageHandle.page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+
+                if (httpStatus !== null && httpStatus !== 200) {
+                    const is502 = httpStatus === 502;
+                    console.warn(`⚠️ Attempt ${attempt} failed: HTTP ${httpStatus} (URL: ${targetUrl})`);
+
+                    if (is502 && attempt < MAX_RETRIES) {
+                        const delay = 1000 * Math.pow(2, attempt - 1);
+                        console.log(`🔄 502 error - rotating proxy and retrying in ${delay}ms...`);
+
+                        const oldHandle = pageHandle;
+                        pageHandle = null;
+                        await releasePage(oldHandle.page, oldHandle.entry);
+
+                        await new Promise(r => setTimeout(r, delay));
+
+                        pageHandle = await getPage();
+
+                        // Re-establish session on the new page/proxy
+                        try {
+                            const parsedUrl = new URL(targetUrl);
+                            if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
+                                console.log('🌐 Re-establishing session with new proxy...');
+                                await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                                    waitUntil: 'domcontentloaded',
+                                    timeout: 30000
+                                });
+                            }
+                        } catch (parseError) {
+                            console.warn('⚠️ URL parse error during session establishment:', parseError.message);
+                        }
+                        continue;
                     }
 
-                    const blob = await response.blob();
-                    const arrayBuffer = await blob.arrayBuffer();
-                    const uint8Array = new Uint8Array(arrayBuffer);
-
-                    return {
-                        data: Array.from(uint8Array),
-                        size: uint8Array.length,
-                        type: blob.type
-                    };
-                } catch (e) {
-                    return { error: e.message };
+                    throw new Error(`Fetch failed: HTTP ${httpStatus} (${targetUrl})`);
                 }
-            }, targetUrl);
 
-            if (!pdfData.error) {
-                break; // success
+                if (!requestId) {
+                    throw new Error(`No network request captured for: ${targetUrl}`);
+                }
+
+                const { body, base64Encoded } = await client.send('Network.getResponseBody', { requestId });
+                pdfBuffer = Buffer.from(body, base64Encoded ? 'base64' : 'binary');
+            } finally {
+                await client.detach().catch(() => {});
             }
 
-            const is502 = pdfData.status === 502;
-            console.warn(`⚠️ Attempt ${attempt} failed: ${pdfData.error} (URL: ${targetUrl})`);
-
-            if (is502 && attempt < MAX_RETRIES) {
-                const delay = 1000 * Math.pow(2, attempt - 1);
-                console.log(`🔄 502 error - rotating proxy and retrying in ${delay}ms...`);
-
-                // Release current page and acquire a new one backed by a different proxy
-                const oldHandle = pageHandle;
-                pageHandle = null;
-                await releasePage(oldHandle.page, oldHandle.entry);
-
-                await new Promise(r => setTimeout(r, delay));
-
-                pageHandle = await getPage();
-
-                // Re-establish session on the new page/proxy
-                try {
-                    const parsedUrl = new URL(targetUrl);
-                    if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
-                        console.log('🌐 Re-establishing session with new proxy...');
-                        await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
-                            waitUntil: 'domcontentloaded',
-                            timeout: 30000
-                        });
-                    }
-                } catch (parseError) {
-                    console.warn('⚠️ URL parse error during session establishment:', parseError.message);
-                }
-            } else if (!is502) {
-                break;
-            }
+            break;
         }
 
-        if (pdfData.error) {
-            const errMsg = pdfData.status
-                ? `Fetch failed: HTTP ${pdfData.status} (${targetUrl})`
-                : `Fetch failed: ${pdfData.error} (${targetUrl})`;
-            throw new Error(errMsg);
+        console.log('📦 PDF fetched! Size:', pdfBuffer.length, 'bytes');
+
+        if (pdfBuffer.length < 1000) {
+            throw new Error('PDF too small: ' + pdfBuffer.length + ' bytes');
         }
-
-        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
-        console.log('📄 Content-Type:', pdfData.type);
-
-        if (pdfData.size < 1000) {
-            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
-        }
-
-        const pdfBuffer = Buffer.from(pdfData.data);
 
         const signature = pdfBuffer.slice(0, 5).toString();
         console.log('🔍 Signature:', signature);
