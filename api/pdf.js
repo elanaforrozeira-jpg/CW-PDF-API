@@ -6,168 +6,172 @@ const CW_HOST = 'cwmediabkt99.crwilladmin.com';
 const CW_ORIGIN = `https://${CW_HOST}`;
 const MAX_RETRIES = 4;
 
-function normalizeUrl(rawUrl) {
-  let targetUrl = decodeURIComponent(rawUrl || '').trim();
-  if (!targetUrl) return null;
-
-  if (!/^https?:\/\//i.test(targetUrl)) {
-    targetUrl = `${CW_ORIGIN}${targetUrl.startsWith('/') ? '' : '/'}${targetUrl}`;
-  }
-
-  return targetUrl;
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function normalizeUrl(rawUrl) {
+  let u = decodeURIComponent(rawUrl || '').trim();
+  if (!u) return null;
+  if (!/^https?:\/\//i.test(u)) {
+    u = `${CW_ORIGIN}${u.startsWith('/') ? '' : '/'}${u}`;
+  }
+  return u;
+}
+
+function isPdfBuffer(buf) {
+  const sig = buf.slice(0, 8).toString('utf8');
+  return sig.includes('%PDF');
+}
+
+function safePreviewFromBuffer(buf) {
+  return buf.slice(0, 350).toString('utf8').replace(/\s+/g, ' ').trim();
 }
 
 app.get('/pdf', async (req, res) => {
   const rawUrl = req.query.url;
   if (!rawUrl) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'URL parameter missing'
-    });
+    return res.status(400).json({ status: 'fail', message: 'URL parameter missing' });
   }
 
   const targetUrl = normalizeUrl(rawUrl);
   if (!targetUrl) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'Invalid URL parameter'
-    });
+    return res.status(400).json({ status: 'fail', message: 'Invalid URL' });
   }
 
-  // Domain validation
   try {
     const parsed = new URL(targetUrl);
     if (parsed.hostname !== CW_HOST) {
-      return res.status(400).json({
-        status: 'fail',
-        message: `Only ${CW_HOST} domain is supported`
-      });
+      return res.status(400).json({ status: 'fail', message: `Only ${CW_HOST} is supported` });
     }
   } catch (e) {
-    return res.status(400).json({
-      status: 'fail',
-      message: `Invalid URL: ${e.message}`
-    });
+    return res.status(400).json({ status: 'fail', message: `Invalid URL: ${e.message}` });
   }
 
-  let pageHandle = null;
-  let lastError = null;
+  let lastErr = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let pageHandle = null;
     try {
-      console.log(`🚀 Attempt ${attempt}/${MAX_RETRIES} - ${targetUrl}`);
-
+      console.log(`🚀 Attempt ${attempt}/${MAX_RETRIES} - Downloading: ${targetUrl}`);
       pageHandle = await getPage();
       const { page } = pageHandle;
 
-      // Establish CW session
-      console.log('🌐 Establishing session...');
-      await page.goto(`${CW_ORIGIN}/`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-      await sleep(700);
+      // ---- 1) Warm session on CW origin ----
+      console.log('🌐 Establishing CW session...');
+      await page.goto(`${CW_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await sleep(800);
 
-      console.log('📥 Fetching PDF using browser context...');
-
-      const pdfData = await page.evaluate(async (url) => {
+      // ---- 2) Try fetch in browser context with strong headers ----
+      console.log('📥 Fetching via browser fetch + auth headers...');
+      const fetched = await page.evaluate(async ({ url, origin }) => {
         try {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 45000);
 
-          const response = await fetch(url, {
+          const resp = await fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
-              Accept: 'application/pdf,*/*'
+              'Accept': 'application/pdf,*/*',
+              'Referer': `${origin}/`,
+              'Origin': origin,
+              'Pragma': 'no-cache',
+              'Cache-Control': 'no-cache',
+              'Sec-Fetch-Site': 'same-origin',
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Dest': 'empty'
             },
             signal: controller.signal
           });
 
           clearTimeout(timeoutId);
 
-          const contentType = response.headers.get('content-type') || '';
+          const contentType = resp.headers.get('content-type') || '';
+          const status = resp.status;
 
-          if (!response.ok) {
-            const txt = await response.text().catch(() => '');
-            return {
-              error: `HTTP ${response.status}`,
-              status: response.status,
-              contentType,
-              preview: txt.slice(0, 300)
-            };
-          }
-
-          const ab = await response.arrayBuffer();
+          const ab = await resp.arrayBuffer();
           const bytes = new Uint8Array(ab);
 
           return {
-            ok: true,
-            size: bytes.length,
+            ok: resp.ok,
+            status,
             contentType,
-            data: Array.from(bytes.slice(0, Math.min(bytes.length, 25_000_000))) // hard cap safety
+            size: bytes.length,
+            data: Array.from(bytes.slice(0, Math.min(bytes.length, 30_000_000)))
           };
         } catch (e) {
-          return { error: e.message || 'Unknown fetch error' };
+          return { ok: false, status: 0, error: e.message || 'fetch failed' };
         }
-      }, targetUrl);
+      }, { url: targetUrl, origin: CW_ORIGIN });
 
-      if (!pdfData || pdfData.error) {
-        throw new Error(
-          pdfData?.preview
-            ? `${pdfData.error} | preview: ${pdfData.preview}`
-            : (pdfData?.error || 'Unknown download error')
-        );
+      let pdfBuffer = null;
+      let reason = '';
+
+      if (fetched && fetched.data) {
+        pdfBuffer = Buffer.from(fetched.data);
+        if (isPdfBuffer(pdfBuffer)) {
+          console.log(`✅ PDF via fetch | size=${pdfBuffer.length} | status=${fetched.status}`);
+        } else {
+          reason = `fetch-not-pdf status=${fetched.status} type=${fetched.contentType} preview=${safePreviewFromBuffer(pdfBuffer)}`;
+          pdfBuffer = null;
+        }
+      } else {
+        reason = `fetch-error status=${fetched?.status || 0} err=${fetched?.error || 'unknown'}`;
       }
 
-      const pdfBuffer = Buffer.from(pdfData.data);
-      const sig = pdfBuffer.slice(0, 8).toString('utf8');
+      // ---- 3) Fallback: direct navigation response buffer ----
+      if (!pdfBuffer) {
+        console.log(`↪️ Fallback page.goto() because: ${reason}`);
+        const navResp = await page.goto(targetUrl, {
+          waitUntil: 'networkidle0',
+          timeout: 45000
+        });
 
-      // PDF signature validation ONLY (no "too small" rejection)
-      if (!sig.includes('%PDF')) {
-        const preview = pdfBuffer.slice(0, 300).toString('utf8');
-        throw new Error(`Not a PDF response. content-type=${pdfData.contentType}; preview=${preview}`);
+        if (navResp) {
+          const buf = await navResp.buffer();
+          if (isPdfBuffer(buf)) {
+            pdfBuffer = buf;
+            console.log(`✅ PDF via goto fallback | size=${pdfBuffer.length} | status=${navResp.status()}`);
+          } else {
+            reason = `goto-not-pdf status=${navResp.status()} type=${navResp.headers()['content-type'] || ''} preview=${safePreviewFromBuffer(buf)}`;
+          }
+        } else {
+          reason = `goto-no-response`;
+        }
       }
 
-      console.log(`✅ PDF OK | size=${pdfBuffer.length} | type=${pdfData.contentType}`);
+      if (!pdfBuffer) {
+        throw new Error(`Access denied or non-PDF response | ${reason}`);
+      }
 
+      // Success response
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Length', pdfBuffer.length);
       res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
       res.setHeader('Cache-Control', 'no-cache');
       res.send(pdfBuffer);
 
-      if (pageHandle) {
-        await releasePage(pageHandle.page, pageHandle.entry);
-        pageHandle = null;
-      }
-
+      await releasePage(pageHandle.page, pageHandle.entry);
       return;
-    } catch (err) {
-      lastError = err;
-      console.warn(`⚠️ Attempt ${attempt} failed: ${err.message}`);
-
+    } catch (e) {
+      lastErr = e;
+      console.warn(`⚠️ Attempt ${attempt} failed: ${e.message}`);
       if (pageHandle) {
         await releasePage(pageHandle.page, pageHandle.entry);
-        pageHandle = null;
       }
-
       if (attempt < MAX_RETRIES) {
-        const delay = 800 * Math.pow(2, attempt - 1);
+        const delay = 900 * Math.pow(2, attempt - 1);
         console.log(`🔄 Rotating proxy + retry in ${delay}ms...`);
         await sleep(delay);
       }
     }
   }
 
-  console.error('❌ Final failure:', lastError?.message);
+  console.error(`❌ Final failure: ${lastErr?.message}`);
   return res.status(500).json({
     status: 'fail',
-    error: lastError?.message || 'Failed to download PDF',
+    error: lastErr?.message || 'Failed to download PDF',
     url: targetUrl
   });
 });
