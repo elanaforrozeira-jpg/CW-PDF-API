@@ -5,7 +5,7 @@ const app = express();
 
 app.get('/pdf', async (req, res) => {
     const rawUrl = req.query.url;
-    const compress = req.query.compress === 'true'; // Add compression flag
+    const compress = req.query.compress === 'true';
     
     if (!rawUrl) {
         return res.status(400).json({ 
@@ -43,10 +43,12 @@ app.get('/pdf', async (req, res) => {
             password: 'ak3t35fp' 
         });
 
-        // Stealth
+        // Enhanced stealth
         await page.evaluateOnNewDocument(() => {
             delete navigator.__proto__.webdriver;
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
             window.chrome = { runtime: {} };
         });
 
@@ -54,30 +56,62 @@ app.get('/pdf', async (req, res) => {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         );
 
-        // Navigate to a simple page first to establish session
-        console.log('🌐 Establishing session...');
-        await page.goto('https://cwmediabkt99.crwilladmin.com/', { 
-            waitUntil: 'domcontentloaded',
+        // Set additional headers
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-User': '?1',
+            'Sec-Fetch-Dest': 'document',
+            'Upgrade-Insecure-Requests': '1'
+        });
+
+        // Navigate to main domain first to establish cookies/session
+        console.log('🌐 Establishing session on main domain...');
+        const mainDomain = 'https://cwmediabkt99.crwilladmin.com/';
+        
+        await page.goto(mainDomain, { 
+            waitUntil: 'networkidle2',
             timeout: 30000 
         });
 
-        await page.waitForTimeout(2000);
+        console.log('⏳ Waiting for session establishment...');
+        await page.waitForTimeout(3000);
 
-        console.log('📥 Fetching PDF using browser context...');
+        // Get cookies after session
+        const cookies = await page.cookies();
+        console.log('🍪 Cookies received:', cookies.length);
 
-        // Fetch PDF inside browser context using native fetch
-        const pdfData = await page.evaluate(async (url) => {
+        console.log('📥 Fetching PDF with authenticated session...');
+
+        // Enhanced fetch with proper headers and credentials
+        const pdfData = await page.evaluate(async (url, domain) => {
             try {
                 const response = await fetch(url, {
                     method: 'GET',
                     credentials: 'include',
+                    mode: 'cors',
+                    cache: 'no-cache',
                     headers: {
-                        'Accept': 'application/pdf,*/*'
+                        'Accept': 'application/pdf,application/octet-stream,*/*',
+                        'Referer': domain,
+                        'Origin': domain,
+                        'Sec-Fetch-Site': 'same-origin',
+                        'Sec-Fetch-Mode': 'no-cors',
+                        'Sec-Fetch-Dest': 'document'
                     }
                 });
 
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
+
                 if (!response.ok) {
-                    return { error: `HTTP ${response.status}` };
+                    const text = await response.text();
+                    return { 
+                        error: `HTTP ${response.status}`,
+                        body: text.substring(0, 500)
+                    };
                 }
 
                 const blob = await response.blob();
@@ -87,22 +121,26 @@ app.get('/pdf', async (req, res) => {
                 return {
                     data: Array.from(uint8Array),
                     size: uint8Array.length,
-                    type: blob.type
+                    type: blob.type || response.headers.get('content-type')
                 };
             } catch (e) {
-                return { error: e.message };
+                return { 
+                    error: e.message,
+                    stack: e.stack
+                };
             }
-        }, targetUrl);
+        }, targetUrl, mainDomain);
 
         if (pdfData.error) {
-            throw new Error('Fetch failed: ' + pdfData.error);
+            console.error('❌ Fetch error details:', pdfData);
+            throw new Error('Fetch failed: ' + pdfData.error + (pdfData.body ? '\nBody: ' + pdfData.body : ''));
         }
 
         console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
         console.log('📄 Content-Type:', pdfData.type);
 
         if (pdfData.size < 1000) {
-            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
+            throw new Error('PDF too small: ' + pdfData.size + ' bytes (might be error page)');
         }
 
         // Convert array back to Buffer
@@ -113,7 +151,7 @@ app.get('/pdf', async (req, res) => {
         console.log('🔍 Signature:', signature);
 
         if (!signature.includes('%PDF')) {
-            const preview = pdfBuffer.slice(0, 100).toString();
+            const preview = pdfBuffer.slice(0, 200).toString();
             console.log('❌ Not a PDF! Preview:', preview);
             throw new Error('Downloaded file is not a PDF');
         }
@@ -123,9 +161,10 @@ app.get('/pdf', async (req, res) => {
         // Compress if requested
         if (compress) {
             console.log('🗜️  Compressing PDF...');
+            const originalSize = pdfBuffer.length;
             pdfBuffer = zlib.gzipSync(pdfBuffer, { level: 6 });
             console.log('📦 Compressed size:', pdfBuffer.length, 'bytes');
-            console.log('💾 Compression ratio:', ((1 - pdfBuffer.length / pdfData.size) * 100).toFixed(2) + '%');
+            console.log('💾 Compression ratio:', ((1 - pdfBuffer.length / originalSize) * 100).toFixed(2) + '%');
         }
 
         // Set response headers
@@ -144,6 +183,7 @@ app.get('/pdf', async (req, res) => {
 
     } catch (error) {
         console.error('❌ ERROR:', error.message);
+        console.error('Stack:', error.stack);
         res.status(500).json({ 
             status: "fail", 
             error: error.message,
