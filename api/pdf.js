@@ -1,192 +1,119 @@
-// Existing code...
+const express = require('express');
+const { getPage, releasePage } = require('./browserPool');
 
-// After line 15, where targetUrl is defined
-if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-    if (!targetUrl.startsWith('/')) {
-        targetUrl = '/' + targetUrl;
+const app = express();
+
+app.get('/pdf', async (req, res) => {
+    const rawUrl = req.query.url;
+
+    if (!rawUrl) {
+        return res.status(400).json({
+            status: 'fail',
+            message: 'URL parameter missing'
+        });
     }
 
     let targetUrl = decodeURIComponent(rawUrl).trim();
 
-    // Auto-detect and normalize URL format
+    // AUTO-DETECT AND FIX URL FORMAT
+    // If URL doesn't start with http/https, assume it's from cwmediabkt99.crwilladmin.com
     if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-        // Assume it's a path for cwmediabkt99.crwilladmin.com
         if (!targetUrl.startsWith('/')) {
             targetUrl = '/' + targetUrl;
         }
         targetUrl = 'https://cwmediabkt99.crwilladmin.com' + targetUrl;
-        console.log('🔧 Normalized URL to:', targetUrl);
+        console.log('🔧 Auto-fixed URL to:', targetUrl);
     }
 
-    // Validate it's from cwmediabkt99.crwilladmin.com domain
+    // VALIDATE IT'S A CW DOMAIN URL
+    let parsedUrl;
     try {
-        const parsedUrl = new URL(targetUrl);
-        if (parsedUrl.hostname !== 'cwmediabkt99.crwilladmin.com') {
-            return res.status(400).json({
-                status: 'fail',
-                message: 'Only cwmediabkt99.crwilladmin.com domain is supported'
-            });
-        }
-    } catch (urlError) {
+        parsedUrl = new URL(targetUrl);
+    } catch (e) {
         return res.status(400).json({
             status: 'fail',
-            message: 'Invalid URL format: ' + urlError.message
+            message: 'Invalid URL format'
+        });
+    }
+
+    if (parsedUrl.hostname !== 'cwmediabkt99.crwilladmin.com') {
+        return res.status(400).json({
+            status: 'fail',
+            message: 'Only cwmediabkt99.crwilladmin.com URLs are supported'
         });
     }
 
     let pageHandle;
+    const MAX_502_RETRIES = 3;
 
-    try {
-        console.log('🚀 Starting PDF download:', targetUrl);
-
-        pageHandle = await getPage();
-        const { page } = pageHandle;
-
-        // Navigate to establish session first (only if same domain)
+    for (let attempt = 0; attempt <= MAX_502_RETRIES; attempt++) {
         try {
-            const parsedUrl = new URL(targetUrl);
-            if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
-                console.log('🌐 Establishing session...');
-                await page.goto('https://cwmediabkt99.crwilladmin.com/', {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 30000
+            pageHandle = await getPage();
+            const { page, entry } = pageHandle;
+
+            const response = await page.goto(targetUrl, {
+                waitUntil: 'networkidle2',
+                timeout: 60000
+            });
+
+            const status = response ? response.status() : 0;
+
+            if (status === 502) {
+                console.warn(`⚠️ 502 on attempt ${attempt + 1}, rotating proxy...`);
+                await releasePage(page, entry);
+                pageHandle = null;
+                if (attempt < MAX_502_RETRIES) {
+                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+                    continue;
+                }
+                return res.status(502).json({
+                    status: 'fail',
+                    message: 'Upstream server returned 502 after retries'
                 });
             }
-        } catch (parseError) {
-            // Invalid URL format; proceed without session establishment
-            console.warn('⚠️ URL parse error during session establishment:', parseError.message);
-        }
 
-        console.log('📥 Fetching PDF using browser context...');
-
-        const MAX_RETRIES = 3;
-        let pdfData;
-
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            console.log(`📥 Fetch attempt ${attempt}/${MAX_RETRIES} for: ${targetUrl}`);
-
-            // Fetch PDF inside browser context using native fetch (proxy auth inherited)
-            pdfData = await pageHandle.page.evaluate(async (url) => {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 30000);
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        headers: {
-                            'Accept': 'application/pdf,*/*'
-                        },
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-
-                    if (!response.ok) {
-                        return { error: `HTTP ${response.status}`, status: response.status };
-                    }
-
-                    const blob = await response.blob();
-                    const arrayBuffer = await blob.arrayBuffer();
-                    const uint8Array = new Uint8Array(arrayBuffer);
-
-                    return {
-                        data: Array.from(uint8Array),
-                        size: uint8Array.length,
-                        type: blob.type
-                    };
-                } catch (e) {
-                    return { error: e.message };
-                }
-            }, targetUrl);
-
-            if (!pdfData.error) {
-                break; // success
+            if (status >= 400) {
+                await releasePage(page, entry);
+                return res.status(status).json({
+                    status: 'fail',
+                    message: `Upstream returned HTTP ${status}`
+                });
             }
 
-            const is502 = pdfData.status === 502;
-            console.warn(`⚠️ Attempt ${attempt} failed: ${pdfData.error} (URL: ${targetUrl})`);
+            const pdfBuffer = await page.pdf({
+                format: 'A4',
+                printBackground: true
+            });
 
-            if (is502 && attempt < MAX_RETRIES) {
-                const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
-                console.log(`🔄 502 error - rotating proxy and retrying in ${delay}ms...`);
+            await releasePage(page, entry);
 
-                // Release current page and acquire a new one backed by a different proxy
-                const oldHandle = pageHandle;
-                pageHandle = null; // prevent double-release in finally if getPage() throws
-                await releasePage(oldHandle.page, oldHandle.entry);
+            const filename = parsedUrl.pathname.split('/').pop() || 'document.pdf';
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+            return res.send(pdfBuffer);
 
-                await new Promise(r => setTimeout(r, delay));
-
-                pageHandle = await getPage();
-
-                // Re-establish session on the new page/proxy
+        } catch (err) {
+            if (pageHandle) {
                 try {
-                    const parsedUrl = new URL(targetUrl);
-                    if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
-                        console.log('🌐 Re-establishing session with new proxy...');
-                        await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
-                            waitUntil: 'domcontentloaded',
-                            timeout: 30000
-                        });
-                    }
-                } catch (parseError) {
-                    console.warn('⚠️ URL parse error during session establishment:', parseError.message);
-                }
-            } else if (!is502) {
-                // Non-502 error (e.g. 404) — no point retrying
-                break;
+                    await releasePage(pageHandle.page, pageHandle.entry);
+                } catch (_) {}
+                pageHandle = null;
             }
+            console.error('❌ PDF generation error:', err.message);
+            return res.status(500).json({
+                status: 'fail',
+                message: 'Failed to generate PDF',
+                error: err.message
+            });
         }
-
-        if (pdfData.error) {
-            const errMsg = pdfData.status
-                ? `Fetch failed: HTTP ${pdfData.status} (${targetUrl})`
-                : `Fetch failed: ${pdfData.error} (${targetUrl})`;
-            throw new Error(errMsg);
-        }
-
-        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
-        console.log('📄 Content-Type:', pdfData.type);
-
-        if (pdfData.size < 1000) {
-            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
-        }
-
-        // Convert array back to Buffer
-        const pdfBuffer = Buffer.from(pdfData.data);
-
-        // Verify PDF
-        const signature = pdfBuffer.slice(0, 5).toString();
-        console.log('🔍 Signature:', signature);
-
-        if (!signature.includes('%PDF')) {
-            const preview = pdfBuffer.slice(0, 100).toString();
-            console.log('❌ Not a PDF! Preview:', preview);
-            throw new Error('Downloaded file is not a PDF');
-        }
-
-        console.log('✅ Valid PDF confirmed!');
-
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Length', pdfBuffer.length);
-        res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.send(pdfBuffer);
-
-        console.log('✅ PDF sent successfully!\n');
-
-    } catch (error) {
-        console.error('❌ ERROR:', error.message);
-        res.status(500).json({
-            status: 'fail',
-            error: error.message,
-            url: targetUrl
-        });
-    } finally {
-        if (pageHandle) await releasePage(pageHandle.page, pageHandle.entry);
     }
-} catch (error) {
-    console.error(error);
-    throw { status: 400, message: 'Invalid URL or domain'; }
+});
+
+const PORT = process.env.PORT || 3000;
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`🚀 PDF API running on port ${PORT}`);
+    });
 }
 
-// Continue with existing code...
+module.exports = app;
