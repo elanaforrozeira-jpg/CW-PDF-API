@@ -21,50 +21,65 @@ app.get('/pdf', async (req, res) => {
         pageHandle = await getPage();
         const { page, entry } = pageHandle;
 
-        console.log('📥 Fetching PDF using browser context...');
-
-        // Fetch PDF inside browser context using native fetch
-        const pdfData = await page.evaluate(async (url) => {
-            try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/pdf,*/*'
-                    }
+        // OPTIONAL: Navigate to establish session first (only if same domain)
+        try {
+            const parsedUrl = new URL(targetUrl);
+            if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
+                console.log('🌐 Establishing session...');
+                await page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 30000
                 });
-
-                if (!response.ok) {
-                    return { error: `HTTP ${response.status}` };
-                }
-
-                const blob = await response.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-                const uint8Array = new Uint8Array(arrayBuffer);
-
-                return {
-                    data: Array.from(uint8Array),
-                    size: uint8Array.length,
-                    type: blob.type
-                };
-            } catch (e) {
-                return { error: e.message };
+                await new Promise(r => setTimeout(r, 1000));
             }
-        }, targetUrl);
-
-        if (pdfData.error) {
-            throw new Error('Fetch failed: ' + pdfData.error);
+        } catch (parseError) {
+            // Invalid URL format; let page.goto handle the error below
+            console.warn('⚠️ URL parse error during session establishment:', parseError.message);
         }
 
-        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
-        console.log('📄 Content-Type:', pdfData.type);
+        console.log('📥 Fetching PDF directly via page.goto()...');
 
-        if (pdfData.size < 1000) {
-            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
+        // Enable request interception to ensure headers on all requests
+        await page.setRequestInterception(true);
+        const handleRequest = interceptedRequest => {
+            interceptedRequest.continue({
+                headers: {
+                    ...interceptedRequest.headers(),
+                    'Accept': 'application/pdf,*/*'
+                }
+            });
+        };
+        page.on('request', handleRequest);
+
+        let response;
+        try {
+            // Navigate directly to PDF URL - proxy authentication will work!
+            response = await page.goto(targetUrl, {
+                waitUntil: 'networkidle0',
+                timeout: 60000
+            });
+        } finally {
+            page.off('request', handleRequest);
+            await page.setRequestInterception(false);
         }
 
-        // Convert array back to Buffer
-        const pdfBuffer = Buffer.from(pdfData.data);
+        if (!response || !response.ok()) {
+            const status = response ? response.status() : 'No response';
+            throw new Error(`Failed to fetch PDF: HTTP ${status}`);
+        }
+
+        // Get PDF buffer directly
+        const pdfBuffer = await response.buffer();
+
+        // Verify content type
+        const contentType = response.headers()['content-type'] || '';
+        console.log('📄 Content-Type:', contentType);
+
+        console.log('📦 PDF fetched! Size:', pdfBuffer.length, 'bytes');
+
+        if (pdfBuffer.length < 1000) {
+            throw new Error('PDF too small: ' + pdfBuffer.length + ' bytes');
+        }
 
         // Verify PDF
         const signature = pdfBuffer.slice(0, 5).toString();
