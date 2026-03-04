@@ -7,9 +7,28 @@ app.get('/pdf', async (req, res) => {
     if (!rawUrl) return res.status(400).json({ status: 'fail', message: 'URL missing' });
 
     let targetUrl = decodeURIComponent(rawUrl).trim();
-    if (!targetUrl.startsWith('http')) {
-        targetUrl = 'https://cwmediabkt99.crwilladmin.com' + (targetUrl.startsWith('/') ? '' : '/') + targetUrl;
-        console.log('🔧 Normalized URL:', targetUrl);
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        if (!targetUrl.startsWith('/')) {
+            targetUrl = '/' + targetUrl;
+        }
+        targetUrl = 'https://cwmediabkt99.crwilladmin.com' + targetUrl;
+        console.log('🔧 Normalized URL to:', targetUrl);
+    }
+
+    // Validate domain
+    try {
+        const parsedUrl = new URL(targetUrl);
+        if (parsedUrl.hostname !== 'cwmediabkt99.crwilladmin.com') {
+            return res.status(400).json({
+                status: 'fail',
+                message: 'Only cwmediabkt99.crwilladmin.com domain is supported'
+            });
+        }
+    } catch (urlError) {
+        return res.status(400).json({
+            status: 'fail',
+            message: 'Invalid URL: ' + urlError.message
+        });
     }
 
     let pageHandle;
@@ -23,17 +42,26 @@ app.get('/pdf', async (req, res) => {
                 waitUntil: 'domcontentloaded', 
                 timeout: 30000 
             });
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1000)); // Wait for session
 
             console.log('📥 Fetching PDF...');
             const pdfData = await pageHandle.page.evaluate(async (url) => {
                 try {
-                    const response = await fetch(url, { 
-                        method: 'GET', 
-                        credentials: 'include', 
-                        headers: { 'Accept': 'application/pdf,*/*' } 
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/pdf,*/*' },
+                        signal: controller.signal
                     });
-                    if (!response.ok) return { error: `HTTP ${response.status}` };
+
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        return { error: `HTTP ${response.status}`, status: response.status };
+                    }
                     const blob = await response.blob();
                     const buffer = await blob.arrayBuffer();
                     return { 
