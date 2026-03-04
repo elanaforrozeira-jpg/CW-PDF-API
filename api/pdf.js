@@ -4,75 +4,165 @@ const app = express();
 
 app.get('/pdf', async (req, res) => {
     const rawUrl = req.query.url;
-    if (!rawUrl) return res.status(400).json({ status: 'fail', message: 'URL missing' });
-
-    let targetUrl = decodeURIComponent(rawUrl).trim();
-    if (!targetUrl.startsWith('http')) {
-        targetUrl = 'https://cwmediabkt99.crwilladmin.com' + (targetUrl.startsWith('/') ? '' : '/') + targetUrl;
+    if (!rawUrl) {
+        return res.status(400).json({
+            status: 'fail',
+            message: 'URL parameter missing'
+        });
     }
 
+    const targetUrl = decodeURIComponent(rawUrl).trim();
     let pageHandle;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+
+    try {
+        console.log('🚀 Starting PDF download:', targetUrl);
+
+        pageHandle = await getPage();
+        const { page } = pageHandle;
+
+        // Navigate to establish session first (only if same domain)
         try {
-            console.log(`🚀 Attempt ${attempt}/3:`, targetUrl);
-            pageHandle = await getPage();
+            const parsedUrl = new URL(targetUrl);
+            if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
+                console.log('🌐 Establishing session...');
+                await page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 30000
+                });
+            }
+        } catch (parseError) {
+            console.warn('⚠️ URL parse error during session establishment:', parseError.message);
+        }
 
-            // Session
-            await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
-                waitUntil: 'domcontentloaded',
-                timeout: 20000
-            });
+        console.log('📥 Fetching PDF using browser context...');
 
-            console.log('📥 Streaming PDF (no memory load)...');
+        const MAX_RETRIES = 3;
+        let pdfData;
 
-            // Navigate directly to PDF
-            const response = await pageHandle.page.goto(targetUrl, {
-                waitUntil: 'networkidle0',
-                timeout: 30000
-            });
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            console.log(`📥 Fetch attempt ${attempt}/${MAX_RETRIES} for: ${targetUrl}`);
 
-            if (!response) throw new Error('No response');
-            if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
+            // Fetch PDF inside browser context using native fetch (proxy auth inherited)
+            pdfData = await pageHandle.page.evaluate(async (url) => {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 40000);
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/pdf,*/*'
+                        },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
 
-            // Stream buffer (light memory)
-            const buffer = await response.buffer();
+                    if (!response.ok) {
+                        return { error: `HTTP ${response.status}`, status: response.status };
+                    }
 
-            if (buffer.length < 1000) {
-                throw new Error(`Too small: ${buffer.length} bytes`);
+                    const blob = await response.blob();
+                    const arrayBuffer = await blob.arrayBuffer();
+                    const uint8Array = new Uint8Array(arrayBuffer);
+
+                    return {
+                        data: Array.from(uint8Array),
+                        size: uint8Array.length,
+                        type: blob.type
+                    };
+                } catch (e) {
+                    return { error: e.message };
+                }
+            }, targetUrl);
+
+            if (!pdfData.error) {
+                break; // success
             }
 
-            const signature = buffer.slice(0, 5).toString();
-            if (!signature.includes('%PDF')) {
-                throw new Error('Not a PDF');
-            }
+            const is502 = pdfData.status === 502;
+            console.warn(`⚠️ Attempt ${attempt} failed: ${pdfData.error} (URL: ${targetUrl})`);
 
-            console.log(`✅ PDF Ready: ${buffer.length} bytes`);
+            if (is502 && attempt < MAX_RETRIES) {
+                const delay = 1000 * Math.pow(2, attempt - 1);
+                console.log(`🔄 502 error - rotating proxy and retrying in ${delay}ms...`);
 
-            res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Length', buffer.length);
-            res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
-            res.send(buffer);
-
-            console.log('✅ Sent!\n');
-            if (pageHandle) await releasePage(pageHandle.page, pageHandle.entry);
-            return;
-
-        } catch (err) {
-            console.error(`❌ Attempt ${attempt}:`, err.message);
-            if (pageHandle) {
-                await releasePage(pageHandle.page, pageHandle.entry);
+                // Release current page and acquire a new one backed by a different proxy
+                const oldHandle = pageHandle;
                 pageHandle = null;
-            }
-            if (attempt < 3) {
-                await new Promise(r => setTimeout(r, 1000 * attempt));
-            } else {
-                return res.status(500).json({ status: 'fail', error: err.message });
+                await releasePage(oldHandle.page, oldHandle.entry);
+
+                await new Promise(r => setTimeout(r, delay));
+
+                pageHandle = await getPage();
+
+                // Re-establish session on the new page/proxy
+                try {
+                    const parsedUrl = new URL(targetUrl);
+                    if (parsedUrl.hostname === 'cwmediabkt99.crwilladmin.com') {
+                        console.log('🌐 Re-establishing session with new proxy...');
+                        await pageHandle.page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                            waitUntil: 'domcontentloaded',
+                            timeout: 30000
+                        });
+                    }
+                } catch (parseError) {
+                    console.warn('⚠️ URL parse error during session establishment:', parseError.message);
+                }
+            } else if (!is502) {
+                break;
             }
         }
+
+        if (pdfData.error) {
+            const errMsg = pdfData.status
+                ? `Fetch failed: HTTP ${pdfData.status} (${targetUrl})`
+                : `Fetch failed: ${pdfData.error} (${targetUrl})`;
+            throw new Error(errMsg);
+        }
+
+        console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
+        console.log('📄 Content-Type:', pdfData.type);
+
+        if (pdfData.size < 1000) {
+            throw new Error('PDF too small: ' + pdfData.size + ' bytes');
+        }
+
+        const pdfBuffer = Buffer.from(pdfData.data);
+
+        const signature = pdfBuffer.slice(0, 5).toString();
+        console.log('🔍 Signature:', signature);
+
+        if (!signature.includes('%PDF')) {
+            const preview = pdfBuffer.slice(0, 100).toString();
+            console.log('❌ Not a PDF! Preview:', preview);
+            throw new Error('Downloaded file is not a PDF');
+        }
+
+        console.log('✅ Valid PDF confirmed!');
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.setHeader('Content-Disposition', 'attachment; filename="lecture-notes.pdf"');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.send(pdfBuffer);
+
+        console.log('✅ PDF sent successfully!\n');
+
+    } catch (error) {
+        console.error('❌ ERROR:', error.message);
+        res.status(500).json({
+            status: 'fail',
+            error: error.message,
+            url: targetUrl
+        });
+    } finally {
+        if (pageHandle) await releasePage(pageHandle.page, pageHandle.entry);
     }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Running on ${PORT}`));
+app.listen(PORT, () => console.log(`✅ API running on ${PORT}`));
