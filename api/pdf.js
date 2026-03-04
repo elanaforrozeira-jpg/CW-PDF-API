@@ -16,7 +16,6 @@ app.get('/pdf', async (req, res) => {
     let targetUrl = decodeURIComponent(rawUrl).trim();
 
     // AUTO-DETECT AND FIX URL FORMAT
-    // If URL doesn't start with http/https, assume it's from cwmediabkt99.crwilladmin.com
     if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
         if (!targetUrl.startsWith('/')) {
             targetUrl = '/' + targetUrl;
@@ -51,39 +50,102 @@ app.get('/pdf', async (req, res) => {
             pageHandle = await getPage();
             const { page, entry } = pageHandle;
 
-            const response = await page.goto(targetUrl, {
-                waitUntil: 'networkidle2',
-                timeout: 60000
+            // Establish session
+            console.log('🌐 Establishing session...');
+            await page.goto('https://cwmediabkt99.crwilladmin.com/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
             });
 
-            const status = response ? response.status() : 0;
+            console.log('📥 Downloading PDF using fetch...');
 
-            if (status === 502) {
-                console.warn(`⚠️ 502 on attempt ${attempt + 1}, rotating proxy...`);
-                await releasePage(page, entry);
-                pageHandle = null;
-                if (attempt < MAX_502_RETRIES) {
-                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
-                    continue;
+            // ✅ CORRECT METHOD: Download PDF using browser's fetch API
+            const pdfData = await page.evaluate(async (url) => {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 30000);
+                    
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/pdf,*/*'
+                        },
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        return { error: `HTTP ${response.status}`, status: response.status };
+                    }
+
+                    const blob = await response.blob();
+                    const arrayBuffer = await blob.arrayBuffer();
+                    const uint8Array = new Uint8Array(arrayBuffer);
+
+                    return {
+                        data: Array.from(uint8Array),
+                        size: uint8Array.length,
+                        type: blob.type
+                    };
+                } catch (e) {
+                    return { error: e.message };
                 }
-                return res.status(502).json({
-                    status: 'fail',
-                    message: 'Upstream server returned 502 after retries'
-                });
-            }
+            }, targetUrl);
 
-            if (status >= 400) {
+            if (pdfData.error) {
+                const status = pdfData.status || 500;
+                
+                if (status === 502) {
+                    console.warn(`⚠️ 502 on attempt ${attempt + 1}, rotating proxy...`);
+                    await releasePage(page, entry);
+                    pageHandle = null;
+                    if (attempt < MAX_502_RETRIES) {
+                        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+                        continue;
+                    }
+                    return res.status(502).json({
+                        status: 'fail',
+                        message: 'Upstream server returned 502 after retries'
+                    });
+                }
+                
                 await releasePage(page, entry);
                 return res.status(status).json({
                     status: 'fail',
-                    message: `Upstream returned HTTP ${status}`
+                    message: pdfData.error
                 });
             }
 
-            const pdfBuffer = await page.pdf({
-                format: 'A4',
-                printBackground: true
-            });
+            console.log('📦 PDF fetched! Size:', pdfData.size, 'bytes');
+
+            if (pdfData.size < 1000) {
+                await releasePage(page, entry);
+                return res.status(500).json({
+                    status: 'fail',
+                    message: 'PDF too small: ' + pdfData.size + ' bytes'
+                });
+            }
+
+            // Convert array back to Buffer
+            const pdfBuffer = Buffer.from(pdfData.data);
+
+            // Verify PDF signature
+            const signature = pdfBuffer.slice(0, 5).toString();
+            console.log('🔍 Signature:', signature);
+
+            if (!signature.includes('%PDF')) {
+                const preview = pdfBuffer.slice(0, 100).toString();
+                console.log('❌ Not a PDF! Preview:', preview);
+                await releasePage(page, entry);
+                return res.status(500).json({
+                    status: 'fail',
+                    message: 'Downloaded file is not a PDF'
+                });
+            }
+
+            console.log('✅ Valid PDF confirmed!');
 
             await releasePage(page, entry);
 
@@ -99,10 +161,10 @@ app.get('/pdf', async (req, res) => {
                 } catch (_) {}
                 pageHandle = null;
             }
-            console.error('❌ PDF generation error:', err.message);
+            console.error('❌ PDF download error:', err.message);
             return res.status(500).json({
                 status: 'fail',
-                message: 'Failed to generate PDF',
+                message: 'Failed to download PDF',
                 error: err.message
             });
         }
