@@ -5,6 +5,7 @@ const http = require('http');
 const zlib = require('zlib');
 const { URL } = require('url');
 const app = express();
+app.use(express.json());
 
 // Proxy configuration
 const PROXY_HOST = 'Px031901.pointtoserver.com';
@@ -228,6 +229,10 @@ app.get('/pdf', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', method: 'streaming' });
 });
+
+// Telegram upload routes
+const telegramRoutes = require('./telegram');
+app.use('/api', telegramRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ API running on ${PORT} with streaming support`));

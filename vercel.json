@@ -1,6 +1,7 @@
 {
   "version": 2,
   "routes": [
-    { "src": "/pdf", "dest": "/api/pdf.js" }
+    { "src": "/pdf", "dest": "/api/pdf.js" },
+    { "src": "/api/fetch-and-upload", "dest": "/api/pdf.js" }
   ]
 }
