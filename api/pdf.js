@@ -28,17 +28,19 @@ async function downloadPDFWithProxy(targetUrl, cookies = '') {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'application/pdf,application/octet-stream,*/*',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://cwmediabkt99.crwilladmin.com/',
+                'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
                 'Connection': 'keep-alive',
                 'Proxy-Authorization': 'Basic ' + Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64')
             }
         };
 
-        // Add cookies if available
         if (cookies) {
             proxyOptions.headers['Cookie'] = cookies;
+            console.log('🍪 Cookies added to request');
         }
 
+        console.log('📡 Target host:', parsedUrl.host);
+        console.log('📡 Using cookies:', cookies ? 'Yes' : 'No');
         console.log('📡 Making proxy request to:', targetUrl);
 
         const req = http.request(proxyOptions, (res) => {
@@ -96,7 +98,8 @@ async function downloadPDFWithProxy(targetUrl, cookies = '') {
 async function getCookies(domain) {
     let browser;
     try {
-        console.log('🍪 Getting cookies for:', domain);
+        console.log('🍪 Getting cookies for domain:', domain);
+        console.log('🌐 Visiting domain:', domain);
         
         browser = await puppeteer.launch({
             executablePath: '/usr/bin/google-chrome-stable',
@@ -131,7 +134,7 @@ async function getCookies(domain) {
         });
 
         const cookies = await page.cookies();
-        console.log('🍪 Received', cookies.length, 'cookies');
+        console.log('🍪 Received', cookies.length, 'cookies from', domain);
 
         // Format cookies for HTTP header
         const cookieString = cookies
@@ -140,6 +143,10 @@ async function getCookies(domain) {
 
         return cookieString;
 
+    } catch (error) {
+        console.error('❌ Cookie fetch failed for', domain, ':', error.message);
+        console.error('Stack:', error.stack);
+        throw error;
     } finally {
         if (browser) await browser.close();
     }
@@ -168,10 +175,17 @@ app.get('/pdf', async (req, res) => {
         // Get cookies if needed (for authenticated PDFs)
         if (useCookies) {
             try {
-                const mainDomain = 'https://cwmediabkt99.crwilladmin.com/';
-                cookies = await getCookies(mainDomain);
+                // Extract domain from target URL dynamically
+                const parsedUrl = new URL(targetUrl);
+                const targetDomain = `${parsedUrl.protocol}//${parsedUrl.host}`;
+
+                console.log('🌐 Target domain:', targetDomain);
+                console.log('🍪 Fetching cookies for:', targetDomain);
+
+                cookies = await getCookies(targetDomain);
+                console.log('✅ Cookies fetched successfully');
             } catch (cookieError) {
-                console.warn('⚠️  Cookie retrieval failed, continuing without cookies:', cookieError.message);
+                console.warn('⚠️ Cookie retrieval failed for domain, trying without cookies:', cookieError.message);
             }
         }
 
