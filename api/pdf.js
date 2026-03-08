@@ -94,13 +94,82 @@ async function downloadPDFWithProxy(targetUrl, cookies = '') {
     });
 }
 
+// Fallback download function with minimal headers (for stubborn domains)
+async function downloadPDFWithProxyDirect(targetUrl) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(targetUrl);
+
+        console.log('🔧 Using minimal headers for:', parsedUrl.host);
+
+        const proxyOptions = {
+            host: PROXY_HOST,
+            port: PROXY_PORT,
+            method: 'GET',
+            path: targetUrl,
+            headers: {
+                'Host': parsedUrl.host,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Proxy-Authorization': 'Basic ' + Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64')
+            }
+        };
+
+        const req = http.request(proxyOptions, (res) => {
+            console.log('📊 Fallback response status:', res.statusCode);
+
+            if (res.statusCode === 302 || res.statusCode === 301) {
+                const redirectUrl = res.headers.location;
+                console.log('🔄 Following redirect:', redirectUrl);
+                return downloadPDFWithProxyDirect(redirectUrl)
+                    .then(resolve)
+                    .catch(reject);
+            }
+
+            if (res.statusCode !== 200) {
+                let errorBody = '';
+                res.on('data', chunk => errorBody += chunk.toString());
+                res.on('end', () => {
+                    reject(new Error(`HTTP ${res.statusCode}: ${errorBody.substring(0, 200)}`));
+                });
+                return;
+            }
+
+            const chunks = [];
+            let downloadedSize = 0;
+
+            res.on('data', (chunk) => {
+                chunks.push(chunk);
+                downloadedSize += chunk.length;
+                if (downloadedSize % (1024 * 1024) === 0) {
+                    console.log(`📥 Fallback download: ${(downloadedSize / 1024 / 1024).toFixed(2)} MB`);
+                }
+            });
+
+            res.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                console.log('✅ Fallback download complete:', (buffer.length / 1024 / 1024).toFixed(2), 'MB');
+                resolve(buffer);
+            });
+
+            res.on('error', reject);
+        });
+
+        req.on('error', reject);
+        req.setTimeout(120000, () => {
+            req.destroy();
+            reject(new Error('Fallback request timeout'));
+        });
+
+        req.end();
+    });
+}
+
 // Function to get cookies using Puppeteer (lightweight session establishment)
 async function getCookies(domain) {
     let browser;
     try {
         console.log('🍪 Getting cookies for domain:', domain);
-        console.log('🌐 Visiting domain:', domain);
-        
+
         browser = await puppeteer.launch({
             executablePath: '/usr/bin/google-chrome-stable',
             headless: "new",
@@ -117,7 +186,7 @@ async function getCookies(domain) {
         });
 
         const page = await browser.newPage();
-        
+
         await page.authenticate({ 
             username: 'purevpn0s11340994', 
             password: 'ak3t35fp' 
@@ -127,14 +196,20 @@ async function getCookies(domain) {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         );
 
-        // Visit main domain to get cookies
+        console.log('🌐 Visiting domain:', domain);
+
+        // Visit domain with reduced timeout (faster failure)
         await page.goto(domain, { 
             waitUntil: 'domcontentloaded',
-            timeout: 30000 
+            timeout: 15000  // Reduced from 30000 - fail faster
         });
 
         const cookies = await page.cookies();
         console.log('🍪 Received', cookies.length, 'cookies from', domain);
+
+        if (cookies.length === 0) {
+            console.warn('⚠️ No cookies received from', domain);
+        }
 
         // Format cookies for HTTP header
         const cookieString = cookies
@@ -144,11 +219,18 @@ async function getCookies(domain) {
         return cookieString;
 
     } catch (error) {
-        console.error('❌ Cookie fetch failed for', domain, ':', error.message);
-        console.error('Stack:', error.stack);
-        throw error;
+        console.error('❌ Cookie fetch failed for', domain);
+        console.error('Error type:', error.name);
+        console.error('Error message:', error.message);
+        throw error;  // Propagate to trigger fallback
     } finally {
-        if (browser) await browser.close();
+        if (browser) {
+            try {
+                await browser.close();
+            } catch (closeError) {
+                console.error('⚠️ Browser close error:', closeError.message);
+            }
+        }
     }
 }
 
@@ -167,12 +249,19 @@ app.get('/pdf', async (req, res) => {
     const targetUrl = decodeURIComponent(rawUrl).trim();
 
     try {
-        console.log('🚀 Starting PDF download:', targetUrl);
-        if (compress) console.log('🗜️  Compression enabled');
+        console.log('🚀 Starting download:', targetUrl);
+        try {
+            const urlExt = new URL(targetUrl).pathname.split('.').pop();
+            console.log('📋 File type from URL:', urlExt);
+        } catch (e) {
+            console.log('📋 File type from URL: unknown');
+        }
+        console.log('⚙️ Cookies enabled:', useCookies);
+        console.log('⚙️ Compression enabled:', compress);
 
         let cookies = '';
         
-        // Get cookies if needed (for authenticated PDFs)
+        // Get cookies if needed (for authenticated files)
         if (useCookies) {
             try {
                 // Extract domain from target URL dynamically
@@ -180,17 +269,64 @@ app.get('/pdf', async (req, res) => {
                 const targetDomain = `${parsedUrl.protocol}//${parsedUrl.host}`;
 
                 console.log('🌐 Target domain:', targetDomain);
-                console.log('🍪 Fetching cookies for:', targetDomain);
+                console.log('🍪 Attempting cookie fetch for:', targetDomain);
 
-                cookies = await getCookies(targetDomain);
+                // Try to get cookies with timeout
+                const cookiePromise = getCookies(targetDomain);
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Cookie fetch timeout')), 15000)
+                );
+
+                cookies = await Promise.race([cookiePromise, timeoutPromise]);
                 console.log('✅ Cookies fetched successfully');
             } catch (cookieError) {
-                console.warn('⚠️ Cookie retrieval failed for domain, trying without cookies:', cookieError.message);
+                console.warn('⚠️ Cookie retrieval failed:', cookieError.message);
+                console.log('🔄 Proceeding with direct download (no cookies)');
+                // Continue with empty cookies - will try direct download
             }
         }
 
-        // Download PDF via proxy with streaming
-        let pdfBuffer = await downloadPDFWithProxy(targetUrl, cookies);
+        // Download via proxy with retry logic
+        let pdfBuffer;
+        let lastError;
+
+        // Attempt 1: With cookies (if available)
+        try {
+            console.log('📥 Attempt 1: Downloading with cookies...');
+            pdfBuffer = await downloadPDFWithProxy(targetUrl, cookies);
+        } catch (error) {
+            console.warn('⚠️ Download failed with cookies:', error.message);
+            lastError = error;
+
+            // Attempt 2: Without cookies (direct access)
+            if (cookies) {
+                try {
+                    console.log('📥 Attempt 2: Retrying without cookies...');
+                    pdfBuffer = await downloadPDFWithProxy(targetUrl, '');
+                } catch (error2) {
+                    console.error('⚠️ Download failed without cookies:', error2.message);
+                    lastError = error2;
+
+                    // Attempt 3: Fallback with minimal headers
+                    try {
+                        console.log('📥 Attempt 3: Final attempt with modified headers...');
+                        pdfBuffer = await downloadPDFWithProxyDirect(targetUrl);
+                    } catch (error3) {
+                        console.error('❌ All download attempts failed');
+                        throw error3;
+                    }
+                }
+            } else {
+                // Attempt 2 (no-cookie path): Fallback with minimal headers
+                try {
+                    console.log('📥 Attempt 2: Final attempt with modified headers...');
+                    pdfBuffer = await downloadPDFWithProxyDirect(targetUrl);
+                } catch (error2) {
+                    console.error('❌ All download attempts failed');
+                    throw lastError;
+                }
+            }
+        }
 
         // Detect file type (no blocking - allow all file types)
         const signature = pdfBuffer.slice(0, 5).toString();
