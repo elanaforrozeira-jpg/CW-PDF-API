@@ -234,5 +234,12 @@ app.get('/health', (req, res) => {
 const telegramRoutes = require('./telegram');
 app.use('/api', telegramRoutes);
 
+// Fetch & stream endpoints
+const { router: fetchRouter, sessions } = require('./fetch');
+const { router: streamRouter, setSessions } = require('./stream');
+setSessions(sessions);
+app.use(fetchRouter);
+app.use(streamRouter);
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ API running on ${PORT} with streaming support`));
