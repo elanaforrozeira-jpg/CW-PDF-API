@@ -401,8 +401,153 @@ app.get('/pdf', async (req, res) => {
     }
 });
 
+app.get('/lecture', async (req, res) => {
+    const rawUrl = req.query.url;
+    const useCookies = req.query.cookies !== 'false'; // Default true
+
+    if (!rawUrl) {
+        return res.status(400).json({
+            status: "fail",
+            message: "URL parameter missing"
+        });
+    }
+
+    const targetUrl = decodeURIComponent(rawUrl).trim();
+
+    try {
+        console.log('🎥 Starting lecture download:', targetUrl);
+
+        let cookies = '';
+
+        // Get cookies for authenticated lectures
+        if (useCookies) {
+            try {
+                // Extract domain from target URL dynamically
+                const parsedUrl = new URL(targetUrl);
+                const targetDomain = `${parsedUrl.protocol}//${parsedUrl.host}`;
+
+                console.log('🌐 Target domain:', targetDomain);
+                console.log('🍪 Fetching cookies for:', targetDomain);
+
+                // Cookie fetch with timeout
+                const cookiePromise = getCookies(targetDomain);
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Cookie fetch timeout')), 15000)
+                );
+
+                cookies = await Promise.race([cookiePromise, timeoutPromise]);
+                console.log('✅ Cookies fetched successfully');
+            } catch (cookieError) {
+                console.warn('⚠️ Cookie retrieval failed:', cookieError.message);
+                console.log('🔄 Proceeding with direct download (no cookies)');
+            }
+        }
+
+        // Download lecture with retry logic
+        let lectureBuffer;
+        let lastError = null;
+
+        // Attempt 1: With cookies (if available)
+        try {
+            console.log('📥 Attempt 1: Downloading with cookies...');
+            lectureBuffer = await downloadPDFWithProxy(targetUrl, cookies);
+        } catch (error) {
+            console.warn('⚠️ Download failed with cookies:', error.message);
+            lastError = error;
+
+            // Attempt 2: Without cookies (direct access)
+            if (cookies) {
+                try {
+                    console.log('📥 Attempt 2: Retrying without cookies...');
+                    lectureBuffer = await downloadPDFWithProxy(targetUrl, '');
+                } catch (error2) {
+                    console.error('⚠️ Download failed without cookies:', error2.message);
+                    lastError = error2;
+
+                    // Attempt 3: Fallback method
+                    try {
+                        console.log('📥 Attempt 3: Final attempt with minimal headers...');
+                        lectureBuffer = await downloadPDFWithProxyDirect(targetUrl);
+                    } catch (error3) {
+                        console.error('❌ All download attempts failed');
+                        throw error3;
+                    }
+                }
+            } else {
+                // Attempt 2 (no-cookie path): Fallback with minimal headers
+                try {
+                    console.log('📥 Attempt 2: Final attempt with minimal headers...');
+                    lectureBuffer = await downloadPDFWithProxyDirect(targetUrl);
+                } catch (error2) {
+                    console.error('❌ All download attempts failed');
+                    throw error2;
+                }
+            }
+        }
+
+        // Detect file type
+        const signature = lectureBuffer.slice(0, 10).toString('hex');
+        console.log('🔍 File signature (hex):', signature);
+
+        let contentType = 'video/mp4';
+        let fileExt = 'mp4';
+
+        if (lectureBuffer.slice(4, 8).toString('ascii') === 'ftyp') {
+            contentType = 'video/mp4';
+            fileExt = 'mp4';
+            console.log('✅ Video file detected (MP4)');
+        } else {
+            console.log('⚠️ Unknown format, treating as video');
+        }
+
+        console.log('📦 Lecture size:', (lectureBuffer.length / 1024 / 1024).toFixed(2), 'MB');
+
+        // Derive filename from URL
+        let fileName;
+        try {
+            const urlPath = new URL(targetUrl).pathname;
+            fileName = urlPath.substring(urlPath.lastIndexOf('/') + 1) || `lecture.${fileExt}`;
+            if (!fileName.endsWith(`.${fileExt}`)) {
+                fileName = fileName.substring(0, fileName.lastIndexOf('.')) + `.${fileExt}`;
+            }
+        } catch (e) {
+            fileName = `lecture.${fileExt}`;
+        }
+
+        // Set response headers for video
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', lectureBuffer.length);
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        res.send(lectureBuffer);
+
+        console.log('✅ Lecture sent successfully!\n');
+
+    } catch (error) {
+        console.error('❌ LECTURE DOWNLOAD ERROR:', error.message);
+        console.error('Stack:', error.stack);
+        res.status(500).json({
+            status: "fail",
+            error: error.message,
+            url: targetUrl,
+            suggestion: "Try adding &cookies=false to URL if authentication is failing"
+        });
+    }
+});
+
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', method: 'streaming' });
+    res.json({
+        status: 'ok',
+        method: 'streaming',
+        endpoints: {
+            pdf: '/pdf?url=PDF_URL',
+            lecture: '/lecture?url=VIDEO_URL',
+            fetch: '/fetch?url=ANY_URL',
+            stream: '/stream/:sessionId'
+        }
+    });
 });
 
 // Telegram upload routes
