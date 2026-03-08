@@ -178,22 +178,47 @@ app.get('/pdf', async (req, res) => {
         // Download PDF via proxy with streaming
         let pdfBuffer = await downloadPDFWithProxy(targetUrl, cookies);
 
-        // Verify PDF signature
+        // Detect file type (no blocking - allow all file types)
         const signature = pdfBuffer.slice(0, 5).toString();
         console.log('🔍 File signature:', signature);
 
-        if (!signature.includes('%PDF')) {
-            const preview = pdfBuffer.slice(0, 500).toString();
-            console.log('❌ Not a PDF! Preview:', preview);
-            throw new Error('Downloaded file is not a PDF');
+        let detectedType = 'unknown';
+        if (signature.includes('%PDF')) {
+            detectedType = 'pdf';
+            console.log('✅ PDF file detected');
+        } else if (pdfBuffer.slice(4, 8).toString('ascii') === 'ftyp') {
+            detectedType = 'video';
+            console.log('✅ Video file detected (MP4/M4V)');
+        } else {
+            console.log('✅ File detected, type:', detectedType);
         }
 
-        console.log('✅ Valid PDF confirmed!');
-        console.log('📦 PDF size:', (pdfBuffer.length / 1024 / 1024).toFixed(2), 'MB');
+        console.log('📦 File size:', (pdfBuffer.length / 1024 / 1024).toFixed(2), 'MB');
 
-        // Compress if requested
-        if (compress) {
-            console.log('🗜️  Compressing PDF...');
+        // Determine content type and filename extension based on detected file type
+        let contentType = 'application/octet-stream';
+        let fileExt = 'bin';
+        if (detectedType === 'pdf') {
+            contentType = 'application/pdf';
+            fileExt = 'pdf';
+        } else if (detectedType === 'video') {
+            contentType = 'video/mp4';
+            fileExt = 'mp4';
+        }
+
+        // Derive filename from source URL, falling back to a sensible default
+        let fileName;
+        try {
+            const urlPath = new URL(targetUrl).pathname;
+            fileName = urlPath.substring(urlPath.lastIndexOf('/') + 1) || `lecture.${fileExt}`;
+        } catch (e) {
+            fileName = `lecture.${fileExt}`;
+        }
+
+        // Compress if requested (skip for already-compressed video files)
+        const shouldCompress = compress && detectedType !== 'video';
+        if (shouldCompress) {
+            console.log('🗜️  Compressing...');
             const originalSize = pdfBuffer.length;
             pdfBuffer = zlib.gzipSync(pdfBuffer, { level: 6 });
             const compressedSize = pdfBuffer.length;
@@ -202,18 +227,18 @@ app.get('/pdf', async (req, res) => {
         }
 
         // Set response headers
-        res.setHeader('Content-Type', compress ? 'application/gzip' : 'application/pdf');
+        res.setHeader('Content-Type', shouldCompress ? 'application/gzip' : contentType);
         res.setHeader('Content-Length', pdfBuffer.length);
-        res.setHeader('Content-Disposition', `attachment; filename="lecture-notes.${compress ? 'pdf.gz' : 'pdf'}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${shouldCompress ? fileName + '.gz' : fileName}"`);
         res.setHeader('Cache-Control', 'no-cache');
         
-        if (compress) {
+        if (shouldCompress) {
             res.setHeader('Content-Encoding', 'gzip');
         }
 
         res.send(pdfBuffer);
 
-        console.log('✅ PDF sent successfully!\n');
+        console.log('✅ File sent successfully!\n');
 
     } catch (error) {
         console.error('❌ ERROR:', error.message);
